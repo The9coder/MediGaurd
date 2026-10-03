@@ -1,20 +1,20 @@
-# 🏥 MediGuard – DevSecOps Pipeline for Heart-Disease Prediction API
+# 🏥 MediGuard – Heart-Disease Prediction API with DevSecOps Integration
 
-> **⚠️ EDUCATIONAL / DEMO PROJECT**  
-> This repository intentionally contains security vulnerabilities for teaching DevSecOps concepts. **Do NOT deploy this code to production as-is.** All patient data is entirely synthetic/fictional.
-
+>**Educational Demo Project**  
+MediGuard is a Flask‑based healthcare API with JWT authentication, patient record management, and machine‑learning risk prediction. It integrates Docker, CI/CD pipelines, and automated security checks to demonstrate secure API development practices.  
+⚠️ All patient data is synthetic and for demonstration only. Do **not** deploy this code to production as‑is.
 ---
 
 ## Table of Contents
 1. [Overview](#overview)
 2. [Architecture](#architecture)
-3. [Intentional Vulnerabilities](#intentional-vulnerabilities)
-4. [Endpoints](#endpoints)
-5. [Quick Start](#quick-start)
-6. [Running Tests](#running-tests)
-7. [Log Analysis](#log-analysis)
+3. [Endpoints](#endpoints)
+4. [Quick Start](#quick-start)
+5. [Running Tests](#running-tests)
+6. [Log Analysis](#log-analysis)
+7. [Project Structure](#project-structure)
 8. [DevSecOps Pipeline Stages](#devsecops-pipeline-stages)
-9. [Project Structure](#project-structure)
+9. [Intentional Vulnerabilities](#intentional-vulnerabilities)
 10. [TODO – Replacing the Placeholder Model](#todo--replacing-the-placeholder-model)
 
 ---
@@ -39,13 +39,13 @@ This project demonstrates:
  Clinic Client
       │  HTTPS
       ▼
- ┌──────────────────────┐
+ ┌───────────────────────┐
  │   Flask API (Gunicorn)│
  │   /health             │
  │   /login  ──► JWT     │
  │   /predict ──► Model  │
  │   /patients/<id>      │
- └────────┬─────────────┘
+ └────────┬──────────────┘
           │ mysql-connector
           ▼
  ┌──────────────────────┐
@@ -54,21 +54,10 @@ This project demonstrates:
  │   patients table     │
  └──────────────────────┘
           │
- logs/access.log ──► scripts/log_analyzer.py ──► logs/security_report.txt
+┌──────────────────────┐
+│   logs/access.log    │──► scripts/log_analyzer.py ──► logs/security_report.txt
+└──────────────────────┘
 ```
-
----
-
-## Intentional Vulnerabilities
-
-These vulnerabilities are **left in deliberately** for security demonstration purposes. Each is commented `# intentional, for demo only` in the source code.
-
-| # | Vulnerability | File | Line / Function | Real-World Risk |
-|---|---------------|------|-----------------|-----------------|
-| 1 | **SQL Injection** | [`app/routes/patients.py`](app/routes/patients.py) | `GET /patients/<patient_id>` | The untrusted path value is interpolated into the SQL query, allowing an attacker to alter its predicates and potentially access records outside their assigned scope. **Fix:** validate the identifier and bind it as a parameter (`WHERE id = %s`). |
-| 2 | **Hardcoded API Key** | [`app/config.py`](app/config.py) | `INTERNAL_API_KEY` | Secrets committed to version control are scraped by bots from public repos, leading to fraud or data exfiltration. **Fix:** load secrets from AWS Secrets Manager / HashiCorp Vault at runtime. |
-| 3 | **Outdated Dependency (CVEs)** | [`requirements.txt`](requirements.txt) | `Flask==2.2.5`, `Werkzeug==2.2.3`, `Jinja2==3.1.2` | Flask 2.2.5 has CVE-2023-30861 (cookie path traversal). Werkzeug 2.2.3 has CVE-2023-25577 (ReDoS in multipart parser). Jinja2 3.1.2 has CVE-2024-22195 (XSS via `|urlencode`). All detectable by `pip-audit`. **Fix:** Pin to current stable releases; run SCA on every PR. |
-| 4 | **Verbose Error Messages** | [`app/factory.py`](app/factory.py) | `internal_error()` handler | Stack traces expose internal file paths, library versions, and logic that attackers exploit. **Fix:** log trace server-side; return a generic `500` message to clients. |
 
 ---
 
@@ -91,15 +80,7 @@ These vulnerabilities are **left in deliberately** for security demonstration pu
 }
 ```
 
-### `/predict` – Example Response
 
-```json
-{
-  "prediction": 1,
-  "risk_probability": 0.7823,
-  "risk_label": "HIGH",
-  "disclaimer": "This is a machine-learning estimate only. It must be reviewed by a qualified clinician."
-}
 ```
 
 ### Demo Credentials
@@ -122,6 +103,7 @@ This remains an educational demo with synthetic data and is not suitable for
 real patient information or clinical use.
 
 ---
+```
 
 ## Quick Start
 
@@ -212,48 +194,6 @@ Flags any IP with ≥ 5 failed login attempts and writes a human-readable report
 
 ---
 
-## DevSecOps Pipeline Stages
-
-The following stages should be integrated into your CI/CD system (GitHub Actions, GitLab CI, Jenkins, etc.):
-
-| Stage | Tool | Gate |
-|-------|------|------|
-| **SAST** | Bandit | Fail on HIGH severity findings |
-| **Dependency SCA** | `pip-audit` / `safety` | Fail on known CVEs |
-| **Secret Scanning** | `detect-secrets` / Gitleaks | Fail if secrets committed |
-| **Container Scan** | Trivy | Fail on CRITICAL CVEs in image |
-| **Unit Tests + Coverage** | pytest + pytest-cov | Fail if coverage < 80 % |
-| **DAST** | OWASP ZAP (baseline) | Fail on HIGH alerts |
-| **Lint / Format** | flake8, black | Fail on lint errors |
-
-The CI workflow lives at [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml). On every push/PR it runs all gates above, uploads scan artifacts, and writes a **release security report** (`release_security_report.md`) that blocks deployment when any gate fails.
-
-### Expected CI behaviour (demo vulnerabilities)
-
-With intentional flaws still present, these gates **should fail** until you remediate them:
-
-| Gate | Why it fails on the demo code |
-|------|-------------------------------|
-| Bandit (SAST) | SQL injection pattern in `patients.py` |
-| pip-audit (SCA) | Pinned vulnerable Flask / Werkzeug / Jinja2 |
-| Gitleaks | Hardcoded `INTERNAL_API_KEY` in `config.py` |
-| OWASP ZAP (DAST) | Verbose stack traces, missing security headers, etc. |
-
-Unit tests and the log analyzer should **pass**. After fixing vulnerabilities, re-run the workflow to obtain a green `release_decision: PASS` report.
-
-### Run scans locally (Windows PowerShell)
-
-```powershell
-pip install -r requirements.txt -r requirements-dev.txt
-python scripts/train_placeholder_model.py
-flake8 app scripts tests
-bandit -r app scripts -c .bandit -ll
-pip-audit -r requirements.txt
-python -m pytest --cov-fail-under=80
-python scripts/log_analyzer.py --log fixtures/sample_access.log --out logs/security_report.txt
-```
-
----
 
 ## Project Structure
 
@@ -302,6 +242,59 @@ medigaurd/
 ```
 
 ---
+
+## Intentional Vulnerabilities
+
+These vulnerabilities are **left in deliberately** for security demonstration purposes. Each is commented `# intentional, for demo only` in the source code.
+
+| # | Vulnerability | File | Line / Function | Real-World Risk |
+|---|---------------|------|-----------------|-----------------|
+| 1 | **SQL Injection** | [`app/routes/patients.py`](app/routes/patients.py) | `GET /patients/<patient_id>` | The untrusted path value is interpolated into the SQL query, allowing an attacker to alter its predicates and potentially access records outside their assigned scope. **Fix:** validate the identifier and bind it as a parameter (`WHERE id = %s`). |
+| 2 | **Hardcoded API Key** | [`app/config.py`](app/config.py) | `INTERNAL_API_KEY` | Secrets committed to version control are scraped by bots from public repos, leading to fraud or data exfiltration. **Fix:** load secrets from AWS Secrets Manager / HashiCorp Vault at runtime. |
+| 3 | **Outdated Dependency (CVEs)** | [`requirements.txt`](requirements.txt) | `Flask==2.2.5`, `Werkzeug==2.2.3`, `Jinja2==3.1.2` | Flask 2.2.5 has CVE-2023-30861 (cookie path traversal). Werkzeug 2.2.3 has CVE-2023-25577 (ReDoS in multipart parser). Jinja2 3.1.2 has CVE-2024-22195 (XSS via `|urlencode`). All detectable by `pip-audit`. **Fix:** Pin to current stable releases; run SCA on every PR. |
+| 4 | **Verbose Error Messages** | [`app/factory.py`](app/factory.py) | `internal_error()` handler | Stack traces expose internal file paths, library versions, and logic that attackers exploit. **Fix:** log trace server-side; return a generic `500` message to clients. |
+
+---
+## DevSecOps Pipeline Stages
+
+The following stages should be integrated into your CI/CD system (GitHub Actions, GitLab CI, Jenkins, etc.):
+
+| Stage | Tool | Gate |
+|-------|------|------|
+| **SAST** | Bandit | Fail on HIGH severity findings |
+| **Dependency SCA** | `pip-audit` / `safety` | Fail on known CVEs |
+| **Secret Scanning** | `detect-secrets` / Gitleaks | Fail if secrets committed |
+| **Container Scan** | Trivy | Fail on CRITICAL CVEs in image |
+| **Unit Tests + Coverage** | pytest + pytest-cov | Fail if coverage < 80 % |
+| **DAST** | OWASP ZAP (baseline) | Fail on HIGH alerts |
+| **Lint / Format** | flake8, black | Fail on lint errors |
+
+The CI workflow lives at [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml). On every push/PR it runs all gates above, uploads scan artifacts, and writes a **release security report** (`release_security_report.md`) that blocks deployment when any gate fails.
+
+### Expected CI behaviour (demo vulnerabilities)
+
+With intentional flaws still present, these gates **should fail** until you remediate them:
+
+| Gate | Why it fails on the demo code |
+|------|-------------------------------|
+| Bandit (SAST) | SQL injection pattern in `patients.py` |
+| pip-audit (SCA) | Pinned vulnerable Flask / Werkzeug / Jinja2 |
+| Gitleaks | Hardcoded `INTERNAL_API_KEY` in `config.py` |
+| OWASP ZAP (DAST) | Verbose stack traces, missing security headers, etc. |
+
+Unit tests and the log analyzer should **pass**. After fixing vulnerabilities, re-run the workflow to obtain a green `release_decision: PASS` report.
+
+### Run scans locally (Windows PowerShell)
+
+```powershell
+pip install -r requirements.txt -r requirements-dev.txt
+python scripts/train_placeholder_model.py
+flake8 app scripts tests
+bandit -r app scripts -c .bandit -ll
+pip-audit -r requirements.txt
+python -m pytest --cov-fail-under=80
+python scripts/log_analyzer.py --log fixtures/sample_access.log --out logs/security_report.txt
+```
 
 ## TODO – Replacing the Placeholder Model
 
