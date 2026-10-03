@@ -27,10 +27,12 @@ class Config:
     DB_HOST: str = os.environ.get("DB_HOST", "localhost")
     DB_PORT: int = int(os.environ.get("DB_PORT", "3306"))
     DB_USER: str = os.environ.get("DB_USER", "mediguard")
-    DB_PASSWORD: str = os.environ.get("DB_PASSWORD", "mediguard_pass")
+    DB_PASSWORD: str = os.environ.get("DB_PASSWORD", "")
     DB_NAME: str = os.environ.get("DB_NAME", "mediguard_db")
 
-    INTERNAL_API_KEY: str = os.environ.get("INTERNAL_API_KEY", "")
+    # Optional demo accounts. Leave unset outside local demonstrations.
+    DEMO_ADMIN_PASSWORD: str = os.environ.get("DEMO_ADMIN_PASSWORD", "")
+    DEMO_CLINICIAN_PASSWORD: str = os.environ.get("DEMO_CLINICIAN_PASSWORD", "")
 
     # Logging
     LOG_FILE: str = os.environ.get("LOG_FILE", "logs/access.log")

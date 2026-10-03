@@ -1,6 +1,7 @@
 """
 /register and /login – create accounts and issue JWTs
 """
+import hmac
 import logging
 import re
 
@@ -14,10 +15,9 @@ from app.database import ensure_app_tables, get_db
 auth_bp = Blueprint("auth", __name__)
 access_logger = logging.getLogger("access")
 
-# Built-in demo accounts are retained for local demonstrations.
 DEMO_USERS = {
-    "admin": {"password": "admin123", "role": "admin"},
-    "clinician": {"password": "clinic456", "role": "clinician"},
+    "admin": {"password_config": "DEMO_ADMIN_PASSWORD", "role": "admin"},
+    "clinician": {"password_config": "DEMO_CLINICIAN_PASSWORD", "role": "clinician"},
 }
 
 
@@ -76,7 +76,10 @@ def login():
 
     user = DEMO_USERS.get(username)
     if user:
-        if user["password"] != password:
+        configured_password = current_app.config[user["password_config"]]
+        if not configured_password or not hmac.compare_digest(
+            configured_password.encode("utf-8"), password.encode("utf-8")
+        ):
             access_logger.warning("LOGIN_FAILED | ip=%s username=%s", ip, username)
             return jsonify({"error": "Invalid credentials"}), 401
         token = generate_token(username, user["role"])

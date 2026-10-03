@@ -1,5 +1,3 @@
-version: "3.9"
-
 services:
   # ── MySQL Database ─────────────────────────────────────────────────────────
   db:
@@ -7,17 +5,17 @@ services:
     container_name: mediguard-db
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password_change_me
+      MYSQL_ROOT_PASSWORD: ${MYSQL_ROOT_PASSWORD:?Set MYSQL_ROOT_PASSWORD in the environment or .env}
       MYSQL_DATABASE: mediguard_db
       MYSQL_USER: mediguard
-      MYSQL_PASSWORD: mediguard_pass
+      MYSQL_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the environment or .env}
     ports:
       - "3306:3306"
     volumes:
       - mysql_data:/var/lib/mysql
       - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "mediguard", "-pmediguard_pass"]
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "--silent"]
       interval: 10s
       timeout: 5s
       retries: 5
@@ -33,13 +31,13 @@ services:
       db:
         condition: service_healthy
     environment:
-      FLASK_ENV: development
-      SECRET_KEY: change-me-in-production
-      JWT_SECRET: change-me-jwt-secret
+      FLASK_ENV: production
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY in the environment or .env}
+      JWT_SECRET: ${JWT_SECRET:?Set JWT_SECRET in the environment or .env}
       DB_HOST: db
       DB_PORT: "3306"
       DB_USER: mediguard
-      DB_PASSWORD: mediguard_pass
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD in the environment or .env}
       DB_NAME: mediguard_db
       LOG_FILE: /app/logs/access.log
       MODEL_PATH: /app/app/model/heart_disease_model.pkl

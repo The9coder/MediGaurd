@@ -1,11 +1,11 @@
 # MediGuard DevSecOps – blocks release when critical security gates fail.
-# Intentional demo vulnerabilities in this repo are expected to FAIL several gates.
+# Pushes and pull requests run security gates before release.
 
 name: MediGuard DevSecOps
 
 on:
   push:
-    branches: [main, master]
+    branches: [main, master, security-fixes]
   pull_request:
   workflow_dispatch:
 
@@ -146,14 +146,14 @@ jobs:
       mysql:
         image: mysql:8.0
         env:
-          MYSQL_ROOT_PASSWORD: root_ci_password
+          MYSQL_ROOT_PASSWORD: ci-root-password-use-only-in-tests
           MYSQL_DATABASE: mediguard_db
           MYSQL_USER: mediguard
-          MYSQL_PASSWORD: mediguard_pass
+          MYSQL_PASSWORD: ci-db-password-use-only-in-tests
         ports:
           - 3306:3306
         options: >-
-          --health-cmd="mysqladmin ping -h localhost -umediguard -pmediguard_pass"
+          --health-cmd="mysqladmin ping -h localhost --silent"
           --health-interval=10s
           --health-timeout=5s
           --health-retries=10
@@ -168,16 +168,16 @@ jobs:
           sudo apt-get install -y -qq default-mysql-client
           pip install -r requirements.txt
           python scripts/train_placeholder_model.py
-          mysql -h 127.0.0.1 -P 3306 -u root -proot_ci_password < db/init.sql
+          mysql -h 127.0.0.1 -P 3306 -u root -pci-root-password-use-only-in-tests < db/init.sql
       - name: Start API
         env:
           FLASK_ENV: production
-          SECRET_KEY: ci-secret-key
-          JWT_SECRET: ci-jwt-secret
+          SECRET_KEY: ci-secret-key-for-local-ci-tests-only-32chars
+          JWT_SECRET: ci-jwt-secret-for-local-ci-tests-only-32chars
           DB_HOST: 127.0.0.1
           DB_PORT: "3306"
           DB_USER: mediguard
-          DB_PASSWORD: mediguard_pass
+          DB_PASSWORD: ci-db-password-use-only-in-tests
           DB_NAME: mediguard_db
           LOG_FILE: logs/access.log
           MODEL_PATH: app/model/heart_disease_model.pkl

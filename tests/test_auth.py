@@ -9,7 +9,7 @@ from werkzeug.security import check_password_hash
 def test_login_success(client):
     resp = client.post(
         "/login",
-        json={"username": "admin", "password": "admin123"},
+        json={"username": "admin", "password": "test-admin-password"},
     )
     assert resp.status_code == 200
     data = resp.get_json()
@@ -43,7 +43,7 @@ def test_login_missing_body(client):
 def test_login_clinician(client):
     resp = client.post(
         "/login",
-        json={"username": "clinician", "password": "clinic456"},
+        json={"username": "clinician", "password": "test-clinician-password"},
     )
     assert resp.status_code == 200
     assert resp.get_json()["role"] == "clinician"

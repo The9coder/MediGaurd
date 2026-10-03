@@ -1,33 +1,32 @@
 How to Fix the Security Weaknesses in MediGuard
 
-This project is intentionally vulnerable for educational purposes. The following remediation steps are the most important fixes to make it safer and closer to production quality.
+This guide covers weaknesses from the intentionally vulnerable main branch and additional production-hardening steps. The security-fixes branch applies the core remediations; this demo is still not suitable for real patient information or clinical use.
 
 1) Remove hardcoded secrets and use environment-based configuration
 
-Problem:
-- Secrets are stored directly in source code in app/config.py.
-- This includes default JWT secret keys and a fake internal API key.
+Status:
+- The security-fixes branch requires explicit production app and database secrets and no longer defines an unused API-key setting.
+- Optional demo account passwords have no committed defaults.
 
 Fix:
 - Move all secrets to environment variables or a secure secret manager (AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, Docker secrets, or equivalent).
-- Example:
+- Use only the secrets the application requires:
   - JWT_SECRET
   - SECRET_KEY
   - DB_PASSWORD
-  - INTERNAL_API_KEY
-- Load them at runtime and fail fast if they are missing in production.
+- Load them at runtime from a secret manager or protected environment and fail fast if they are missing in production.
 - Do not commit secrets to Git.
 - Add a .env.example file with placeholders instead of real values.
 
 Example:
-  export JWT_SECRET="replace-with-real-secret"
-  export DB_PASSWORD="replace-with-real-db-password"
+  $env:JWT_SECRET = "replace-with-a-random-secret-of-at-least-32-characters"
+  $env:DB_PASSWORD = "replace-with-a-strong-database-password"
 
 2) Use parameterized queries everywhere to prevent SQL injection
 
-Problem:
-- Dynamic SQL is built using string concatenation in patients routes.
-- This creates injection risks if unsanitized input reaches the SQL statement.
+Status:
+- The main branch demonstrates SQL injection in the patient ID lookup.
+- The security-fixes branch restricts IDs to integers and binds values as SQL parameters.
 
 Fix:
 - Use parameterized SQL with placeholders and pass values as parameters.
@@ -42,11 +41,10 @@ Example:
 
 - Review all SQL statements for any use of f-strings or string concatenation.
 
-3) Remove verbose error messages and stack traces from API responses
+3) Keep verbose error messages and stack traces out of API responses
 
-Problem:
-- app/factory.py returns raw traceback and internal exception details to clients.
-- This leaks internal implementation details and helps attackers craft targeted exploits.
+Status:
+- The baseline already returned a generic 500 response. The security-fixes branch preserves this and adds a regression test.
 
 Fix:
 - Log the traceback server-side only.
@@ -81,8 +79,8 @@ Example protections:
 
 5) Upgrade vulnerable dependencies
 
-Problem:
-- requirements.txt pins older Flask, Werkzeug, and Jinja versions with known CVEs.
+Status:
+- The security-fixes branch updates Flask, Werkzeug, and Jinja2. Keep running dependency audits to catch new advisories.
 
 Fix:
 - Update to supported, patched versions.

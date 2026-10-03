@@ -10,20 +10,13 @@ from app.auth import jwt_required
 from app.database import get_db
 
 patients_bp = Blueprint("patients", __name__)
-PATIENT_FIELDS = (
-    "id, name, dob, gender, mrn, diagnosis, assigned_to, created_at"
-)
 
 
 def _patient_scope():
     payload = request.jwt_payload
     if payload.get("role") == "admin":
-        return "", ()
-    return " WHERE assigned_to = %s", (payload["sub"],)
-
-
-def _patient_query_base():
-    return f"SELECT {PATIENT_FIELDS} FROM patients"
+        return False, ()
+    return True, (payload["sub"],)
 
 
 @patients_bp.route("/patients", methods=["GET", "POST"])
@@ -74,15 +67,21 @@ def patients():
 
         return jsonify({"id": patient_id, "mrn": mrn}), 201
 
-    scope, params = _patient_scope()
+    scoped, params = _patient_scope()
     db = get_db()
     cursor = db.cursor(dictionary=True)
     try:
-        if scope:
-            query = f"{_patient_query_base()} {scope} ORDER BY id ASC"
+        if scoped:
+            cursor.execute(
+                "SELECT id, name, dob, gender, mrn, diagnosis, assigned_to, created_at "
+                "FROM patients WHERE assigned_to = %s ORDER BY id ASC",
+                params,
+            )
         else:
-            query = f"{_patient_query_base()} ORDER BY id ASC"
-        cursor.execute(query, params)
+            cursor.execute(
+                "SELECT id, name, dob, gender, mrn, diagnosis, assigned_to, created_at "
+                "FROM patients ORDER BY id ASC"
+            )
         records = cursor.fetchall()
     except MySQLError:
         current_app.logger.exception("Patient list query failed")
@@ -93,21 +92,25 @@ def patients():
     return jsonify({"patients": records}), 200
 
 
-@patients_bp.route("/patients/<patient_id>", methods=["GET"])
+@patients_bp.route("/patients/<int:patient_id>", methods=["GET"])
 @jwt_required
 def get_patient(patient_id):
-    scope, params = _patient_scope()
+    scoped, params = _patient_scope()
     db = get_db()
     cursor = db.cursor(dictionary=True)
     try:
-        # INTENTIONAL VULNERABILITY #1: patient_id is interpolated into SQL.
-        # Keep this unsafe only in the educational baseline; bind it as a
-        # parameter in the remediation fork.
-        if params:
-            query = f"{_patient_query_base()} WHERE id = {patient_id} AND assigned_to = %s"
+        if scoped:
+            cursor.execute(
+                "SELECT id, name, dob, gender, mrn, diagnosis, assigned_to, created_at "
+                "FROM patients WHERE id = %s AND assigned_to = %s",
+                (patient_id, *params),
+            )
         else:
-            query = f"{_patient_query_base()} WHERE id = {patient_id}"
-        cursor.execute(query, params)
+            cursor.execute(
+                "SELECT id, name, dob, gender, mrn, diagnosis, assigned_to, created_at "
+                "FROM patients WHERE id = %s",
+                (patient_id,),
+            )
         patient = cursor.fetchone()
     except MySQLError:
         current_app.logger.exception("Patient lookup failed")

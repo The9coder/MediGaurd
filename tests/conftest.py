@@ -45,6 +45,8 @@ def app(placeholder_model):
         {
             "TESTING": True,
             "MODEL_PATH": placeholder_model,
+            "DEMO_ADMIN_PASSWORD": "test-admin-password",
+            "DEMO_CLINICIAN_PASSWORD": "test-clinician-password",
             # Point DB to a non-existent host so DB tests are mocked
             "DB_HOST": "localhost",
             "DB_PORT": "9999",
@@ -63,7 +65,7 @@ def auth_headers(client):
     """Return a valid JWT Authorization header for the admin user."""
     resp = client.post(
         "/login",
-        json={"username": "admin", "password": "admin123"},
+        json={"username": "admin", "password": "test-admin-password"},
         content_type="application/json",
     )
     token = resp.get_json()["token"]

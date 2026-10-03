@@ -51,7 +51,7 @@ def test_patient_list_is_scoped_to_clinician(mock_get_db, client):
     cursor.fetchall.return_value = [FAKE_PATIENT]
     mock_get_db.return_value.cursor.return_value = cursor
     login = client.post(
-        "/login", json={"username": "clinician", "password": "clinic456"}
+        "/login", json={"username": "clinician", "password": "test-clinician-password"}
     )
     headers = {"Authorization": f"Bearer {login.get_json()['token']}"}
 
@@ -70,7 +70,7 @@ def test_create_patient_assigns_record_to_signed_in_user(mock_get_db, client):
     cursor.lastrowid = 42
     mock_get_db.return_value.cursor.return_value = cursor
     login = client.post(
-        "/login", json={"username": "clinician", "password": "clinic456"}
+        "/login", json={"username": "clinician", "password": "test-clinician-password"}
     )
 
     response = client.post(
@@ -95,14 +95,19 @@ def test_create_patient_assigns_record_to_signed_in_user(mock_get_db, client):
 
 
 @patch("app.routes.patients.get_db")
-def test_patient_id_is_interpolated_into_query(mock_get_db, client, auth_headers):
+def test_patient_id_is_bound_as_query_parameter(mock_get_db, client, auth_headers):
     cursor = MagicMock()
     cursor.fetchone.return_value = FAKE_PATIENT
     mock_get_db.return_value.cursor.return_value = cursor
 
-    response = client.get("/patients/1%20OR%201=1", headers=auth_headers)
+    response = client.get("/patients/1", headers=auth_headers)
 
     assert response.status_code == 200
     query, params = cursor.execute.call_args.args
-    assert "WHERE id = 1 OR 1=1" in query
-    assert params == ()
+    assert "WHERE id = %s" in query
+    assert params == (1,)
+
+
+def test_patient_id_injection_payload_is_rejected(client, auth_headers):
+    response = client.get("/patients/1%20OR%201=1", headers=auth_headers)
+    assert response.status_code == 404

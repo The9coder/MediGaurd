@@ -14,7 +14,7 @@ MediGuard is a Flask‑based healthcare API with JWT authentication, patient rec
 6. [Log Analysis](#log-analysis)
 7. [Project Structure](#project-structure)
 8. [DevSecOps Pipeline Stages](#devsecops-pipeline-stages)
-9. [Intentional Vulnerabilities](#intentional-vulnerabilities)
+9. [Security Remediation Status](#security-remediation-status)
 10. [TODO – Replacing the Placeholder Model](#todo--replacing-the-placeholder-model)
 
 ---
@@ -29,7 +29,7 @@ This project demonstrates:
 - Access logging + brute-force detection via `scripts/log_analyzer.py`
 - Docker + Docker Compose for local development
 - Pytest test suite with coverage
-- Intentional vulnerable code patterns used as teaching examples
+- Automated security checks and a remediation branch that demonstrates fixes
 
 ---
 
@@ -80,30 +80,28 @@ This project demonstrates:
 }
 ```
 
+### Local Demo Accounts
 
-```
-
-### Demo Credentials
-
-| Username | Password | Role |
-|----------|----------|------|
-| `admin` | `admin123` | admin |
-| `clinician` | `clinic456` | clinician |
+The built-in `admin` and `clinician` demo accounts are disabled unless you
+explicitly set `DEMO_ADMIN_PASSWORD` and/or `DEMO_CLINICIAN_PASSWORD` in the
+environment when running a non-production configuration. Production startup
+rejects these demo accounts. Otherwise, create a clinician account with
+`/register`.
 
 ### User Accounts and Saved Records
 
 Users can create an account from the sign-in page. New accounts receive the
-clinician role; only the built-in admin account can access the full patient
-directory. Patient profiles created by a user are assigned to that username
-and are visible to that user, while admins can view all profiles. Successful
-risk predictions are saved to the user's prediction history. Passwords for
+clinician role; an explicitly enabled non-production admin demo account can
+access the full patient directory. Patient profiles created by a user are
+assigned to that username and are visible to that user, while admins can view
+all profiles. Successful risk predictions are saved to the user's prediction
+history. Passwords for
 registered accounts are stored as password hashes in MySQL.
 
 This remains an educational demo with synthetic data and is not suitable for
 real patient information or clinical use.
 
 ---
-```
 
 ## Quick Start
 
@@ -120,6 +118,11 @@ python scripts/train_placeholder_model.py
 
 ### 2 – Start with Docker Compose
 
+Copy `.env.example` to `.env`, then replace the placeholders with strong,
+unique values for `SECRET_KEY`, `JWT_SECRET`, `DB_PASSWORD`, and
+`MYSQL_ROOT_PASSWORD`. Production startup rejects missing app/database secrets
+and app secrets shorter than 32 characters. Keep `.env` untracked.
+
 ```bash
 docker-compose up --build
 ```
@@ -132,10 +135,15 @@ The API will be available at `http://localhost:5000`.
 # Health check
 curl http://localhost:5000/health
 
+# Register a clinician account (replace the placeholder with a strong password)
+curl -s -X POST http://localhost:5000/register \
+  -H "Content-Type: application/json" \
+  -d '{"username":"demo_clinician","password":"<strong-password>"}'
+
 # Login
 TOKEN=$(curl -s -X POST http://localhost:5000/login \
   -H "Content-Type: application/json" \
-  -d '{"username":"clinician","password":"clinic456"}' | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
+  -d '{"username":"demo_clinician","password":"<strong-password>"}' | python -c "import sys,json; print(json.load(sys.stdin)['token'])")
 
 # Predict
 curl -X POST http://localhost:5000/predict \
@@ -177,7 +185,7 @@ Coverage report is printed to the terminal and written to `coverage.xml`.
 | `test_health.py` | `/health` status and response shape |
 | `test_auth.py` | Login success, wrong password, unknown user, missing body, role |
 | `test_predict.py` | Auth guard, successful prediction, missing features, invalid/expired JWT |
-| `test_patients.py` | DB success/not-found (mocked), auth guard, SQLi demo assertion |
+| `test_patients.py` | DB success/not-found (mocked), auth guard, parameterized ID lookup |
 | `test_log_analyzer.py` | Log parsing, IP flagging, threshold, report generation |
 
 ---
@@ -201,8 +209,8 @@ Flags any IP with ≥ 5 failed login attempts and writes a human-readable report
 medigaurd/
 ├── app/
 │   ├── __init__.py
-│   ├── config.py          ← ⚠️  VULN #2 – hardcoded API key
-│   ├── factory.py         ← ⚠️  VULN #4 – verbose error handler
+│   ├── config.py          ← env-based secrets and optional local demo passwords
+│   ├── factory.py         ← generic client errors; production secret checks
 │   ├── auth.py            ← JWT utilities
 │   ├── database.py        ← MySQL connection helper
 │   ├── model/
@@ -211,7 +219,7 @@ medigaurd/
 │       ├── health.py
 │       ├── auth.py
 │       ├── predict.py
-│       └── patients.py    ← ⚠️  VULN #1 – SQL injection
+│       └── patients.py    ← parameterized patient queries
 ├── db/
 │   └── init.sql           ← MySQL schema + fake seed data
 ├── logs/                  ← Runtime logs (git-ignored)
@@ -236,23 +244,29 @@ medigaurd/
 ├── docker-compose.yml
 ├── Dockerfile
 ├── pytest.ini
-├── requirements.txt       ← ⚠️  VULN #3 – outdated Flask/Werkzeug
+├── requirements.txt       ← patched Flask/Werkzeug/Jinja2 versions
 ├── requirements-dev.txt
 └── run.py
 ```
 
 ---
 
-## Intentional Vulnerabilities
+## Security Remediation Status
 
-These vulnerabilities are **left in deliberately** for security demonstration purposes. Each is commented `# intentional, for demo only` in the source code.
+The `main` branch is the intentionally vulnerable learning baseline. The
+`security-fixes` branch demonstrates remediation of the documented issues:
 
-| # | Vulnerability | File | Line / Function | Real-World Risk |
-|---|---------------|------|-----------------|-----------------|
-| 1 | **SQL Injection** | [`app/routes/patients.py`](app/routes/patients.py) | `GET /patients/<patient_id>` | The untrusted path value is interpolated into the SQL query, allowing an attacker to alter its predicates and potentially access records outside their assigned scope. **Fix:** validate the identifier and bind it as a parameter (`WHERE id = %s`). |
-| 2 | **Hardcoded API Key** | [`app/config.py`](app/config.py) | `INTERNAL_API_KEY` | Secrets committed to version control are scraped by bots from public repos, leading to fraud or data exfiltration. **Fix:** load secrets from AWS Secrets Manager / HashiCorp Vault at runtime. |
-| 3 | **Outdated Dependency (CVEs)** | [`requirements.txt`](requirements.txt) | `Flask==2.2.5`, `Werkzeug==2.2.3`, `Jinja2==3.1.2` | Flask 2.2.5 has CVE-2023-30861 (cookie path traversal). Werkzeug 2.2.3 has CVE-2023-25577 (ReDoS in multipart parser). Jinja2 3.1.2 has CVE-2024-22195 (XSS via `|urlencode`). All detectable by `pip-audit`. **Fix:** Pin to current stable releases; run SCA on every PR. |
-| 4 | **Verbose Error Messages** | [`app/factory.py`](app/factory.py) | `internal_error()` handler | Stack traces expose internal file paths, library versions, and logic that attackers exploit. **Fix:** log trace server-side; return a generic `500` message to clients. |
+| Baseline issue | Remediation |
+|---|---|
+| SQL injection through patient ID | Route-constrain IDs to integers and bind them as SQL parameters in [`app/routes/patients.py`](app/routes/patients.py). |
+| Committed/default secrets | Production startup requires strong environment-provided app and database secrets; optional demo passwords have no committed defaults. |
+| Vulnerable Flask, Werkzeug, and Jinja2 pins | Updated versions in [`requirements.txt`](requirements.txt); continue running `pip-audit` to catch newly disclosed CVEs. |
+| Error-response disclosure | The baseline already returned a generic HTTP 500 response; the remediation branch keeps that behavior and tests it. |
+| Hardcoded Docker credentials | Docker Compose requires secrets from the environment or an untracked `.env` file. |
+
+This is still an educational application, not a production-ready clinical system.
+The security workflow must pass before release, and all scan results should be
+reviewed rather than treating a clean scan as proof of security.
 
 ---
 ## DevSecOps Pipeline Stages
@@ -271,18 +285,9 @@ The following stages should be integrated into your CI/CD system (GitHub Actions
 
 The CI workflow lives at [`.github/workflows/devsecops.yml`](.github/workflows/devsecops.yml). On every push/PR it runs all gates above, uploads scan artifacts, and writes a **release security report** (`release_security_report.md`) that blocks deployment when any gate fails.
 
-### Expected CI behaviour (demo vulnerabilities)
-
-With intentional flaws still present, these gates **should fail** until you remediate them:
-
-| Gate | Why it fails on the demo code |
-|------|-------------------------------|
-| Bandit (SAST) | SQL injection pattern in `patients.py` |
-| pip-audit (SCA) | Pinned vulnerable Flask / Werkzeug / Jinja2 |
-| Gitleaks | Hardcoded `INTERNAL_API_KEY` in `config.py` |
-| OWASP ZAP (DAST) | Verbose stack traces, missing security headers, etc. |
-
-Unit tests and the log analyzer should **pass**. After fixing vulnerabilities, re-run the workflow to obtain a green `release_decision: PASS` report.
+The remediation branch is intended to pass the documented security checks. A
+failed check blocks release; investigate its report and fix the underlying issue
+rather than suppressing the finding.
 
 ### Run scans locally (Windows PowerShell)
 

@@ -22,6 +22,38 @@ def create_app(config_name: str = "default") -> Flask:
     """Create and configure the Flask application."""
     app = Flask(__name__)
     app.config.from_object(config[config_name])
+    if config_name == "production":
+        required_secrets = ("SECRET_KEY", "JWT_SECRET", "DB_PASSWORD")
+        missing = [name for name in required_secrets if not os.environ.get(name)]
+        if missing:
+            raise RuntimeError(
+                "Production configuration requires: " + ", ".join(missing)
+            )
+        weak_keys = [
+            name
+            for name in ("SECRET_KEY", "JWT_SECRET")
+            if len(os.environ[name]) < 32
+        ]
+        if weak_keys:
+            raise RuntimeError(
+                "Production secrets must be at least 32 characters: "
+                + ", ".join(weak_keys)
+            )
+        configured_demo_accounts = [
+            name
+            for name in ("DEMO_ADMIN_PASSWORD", "DEMO_CLINICIAN_PASSWORD")
+            if os.environ.get(name)
+        ]
+        if configured_demo_accounts:
+            raise RuntimeError(
+                "Demo accounts must be disabled in production: "
+                + ", ".join(configured_demo_accounts)
+            )
+        app.config["SECRET_KEY"] = os.environ["SECRET_KEY"]
+        app.config["JWT_SECRET"] = os.environ["JWT_SECRET"]
+        app.config["DB_PASSWORD"] = os.environ["DB_PASSWORD"]
+        app.config["DEMO_ADMIN_PASSWORD"] = ""
+        app.config["DEMO_CLINICIAN_PASSWORD"] = ""
 
     # ── Log directory ─────────────────────────────────────────────────────────
     os.makedirs("logs", exist_ok=True)
@@ -83,13 +115,6 @@ def create_app(config_name: str = "default") -> Flask:
     def method_not_allowed(e):
         return jsonify({"error": "Method not allowed"}), 405
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # INTENTIONAL VULNERABILITY #4: Verbose error handler leaks stack traces
-    # Real-world risk: Stack traces expose internal file paths, class names,
-    # library versions, and application logic. Attackers use this to craft
-    # targeted exploits (e.g., path traversal, prototype pollution).
-    # FIX: Log the traceback server-side only; return a generic 500 message.
-    # ─────────────────────────────────────────────────────────────────────────
     @app.errorhandler(500)
     def internal_error(e):
         app.logger.exception("Unhandled server error")
