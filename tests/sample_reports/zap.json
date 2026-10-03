@@ -1,0 +1,28 @@
+{
+  "site": [
+    {
+      "name": "http://localhost:5000",
+      "alerts": [
+        {
+          "pluginid": "10021",
+          "alert": "X-Content-Type-Options Header Missing",
+          "riskdesc": "Low (Medium)",
+          "desc": "The Anti-MIME-Sniffing header X-Content-Type-Options was not set to 'nosniff'.",
+          "instances": [
+            {"uri": "http://localhost:5000/health"},
+            {"uri": "http://localhost:5000/predict"}
+          ]
+        },
+        {
+          "pluginid": "10038",
+          "alert": "Content Security Policy (CSP) Header Not Set",
+          "riskdesc": "Medium (High)",
+          "desc": "Content Security Policy (CSP) is an added layer of security that helps to detect and mitigate certain types of attacks.",
+          "instances": [
+            {"uri": "http://localhost:5000/"}
+          ]
+        }
+      ]
+    }
+  ]
+}

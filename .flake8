@@ -1,0 +1,6 @@
+[flake8]
+max-line-length = 100
+exclude = .venv,venv,.git,__pycache__,.pytest_cache
+per-file-ignores =
+    app/routes/patients.py: E501
+    app/config.py: E501

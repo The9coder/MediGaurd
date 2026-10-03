@@ -1,0 +1,59 @@
+version: "3.9"
+
+services:
+  # ── MySQL Database ─────────────────────────────────────────────────────────
+  db:
+    image: mysql:8.0
+    container_name: mediguard-db
+    restart: unless-stopped
+    environment:
+      MYSQL_ROOT_PASSWORD: root_password_change_me
+      MYSQL_DATABASE: mediguard_db
+      MYSQL_USER: mediguard
+      MYSQL_PASSWORD: mediguard_pass
+    ports:
+      - "3306:3306"
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "mediguard", "-pmediguard_pass"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ── Flask API ──────────────────────────────────────────────────────────────
+  api:
+    build:
+      context: .
+      target: runtime
+    container_name: mediguard-api
+    restart: unless-stopped
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      FLASK_ENV: development
+      SECRET_KEY: change-me-in-production
+      JWT_SECRET: change-me-jwt-secret
+      DB_HOST: db
+      DB_PORT: "3306"
+      DB_USER: mediguard
+      DB_PASSWORD: mediguard_pass
+      DB_NAME: mediguard_db
+      LOG_FILE: /app/logs/access.log
+      MODEL_PATH: /app/app/model/heart_disease_model.pkl
+    ports:
+      - "5000:5000"
+    volumes:
+      - ./logs:/app/logs
+      - ./app/model:/app/app/model
+    healthcheck:
+      test: ["CMD", "python", "-c",
+             "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+volumes:
+  mysql_data:

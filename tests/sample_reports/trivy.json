@@ -1,0 +1,28 @@
+{
+  "Results": [
+    {
+      "Target": "mediguard-api:latest",
+      "Type": "python-pkg",
+      "Vulnerabilities": [
+        {
+          "VulnerabilityID": "CVE-2023-30861",
+          "PkgName": "Flask",
+          "InstalledVersion": "2.2.5",
+          "FixedVersion": "2.3.2",
+          "Severity": "HIGH",
+          "Title": "Flask cookie security bypass",
+          "Description": "Flask 2.2.5 vulnerable to secure cookie bypass (CVE-2023-30861)."
+        },
+        {
+          "VulnerabilityID": "CVE-2023-25577",
+          "PkgName": "Werkzeug",
+          "InstalledVersion": "2.2.3",
+          "FixedVersion": "2.2.3",
+          "Severity": "HIGH",
+          "Title": "Werkzeug ReDoS in multipart parser",
+          "Description": "Werkzeug before 2.3.3 has ReDoS in multipart parser."
+        }
+      ]
+    }
+  ]
+}

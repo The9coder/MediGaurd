@@ -1,0 +1,10 @@
+[run]
+source = app, scripts
+omit =
+    scripts/train_placeholder_model.py
+    scripts/generate_release_security_report.py
+    scripts/check_zap_gate.py
+
+[report]
+fail_under = 80
+show_missing = True

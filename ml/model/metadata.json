@@ -1,0 +1,50 @@
+{
+  "model_type": "LogisticRegression",
+  "feature_names": [
+    "age",
+    "sex",
+    "cp",
+    "trestbps",
+    "chol",
+    "fbs",
+    "restecg",
+    "thalach",
+    "exang",
+    "oldpeak",
+    "slope",
+    "ca",
+    "thal"
+  ],
+  "target": {
+    "0": "no heart disease",
+    "1": "heart disease"
+  },
+  "training_date": "2026-10-03T17:45:47.065921",
+  "library_versions": {
+    "scikit-learn": "1.9.1",
+    "numpy": "2.5.3",
+    "pandas": "3.0.6",
+    "joblib": "1.6.0"
+  },
+  "cv_metrics": {
+    "accuracy_mean": 0.8139,
+    "accuracy_std": 0.0235,
+    "precision_mean": 0.8154,
+    "precision_std": 0.0444,
+    "recall_mean": 0.7739,
+    "recall_std": 0.066,
+    "f1_mean": 0.7913,
+    "f1_std": 0.0312,
+    "roc_auc_mean": 0.8963,
+    "roc_auc_std": 0.0141
+  },
+  "test_metrics": {
+    "accuracy": 0.8689,
+    "precision": 0.8125,
+    "recall": 0.9286,
+    "f1": 0.8667,
+    "roc_auc": 0.9502
+  },
+  "training_data": "UCI Heart Disease (Cleveland), 303 rows, ucimlrepo id=45",
+  "disclaimer": "This model is for EDUCATIONAL PURPOSES ONLY. It must NOT be used for real clinical decisions."
+}

@@ -1,0 +1,16 @@
+# gate_config.yml – MediGuard Quality Gate Thresholds
+#
+# The quality_gate.py script reads this file and fails the pipeline
+# if any severity count exceeds its threshold.
+#
+# Reasoning:
+#   CRITICAL: 0  → any critical vulnerability must be fixed before deployment
+#   HIGH:     5  → allow a small number of known/accepted HIGH findings
+#   MEDIUM:  20  → medium findings should be tracked but don't block release
+#   LOW:    100  → low findings are informational
+
+thresholds:
+  CRITICAL: 0
+  HIGH: 5
+  MEDIUM: 20
+  LOW: 100

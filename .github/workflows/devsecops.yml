@@ -1,0 +1,261 @@
+# MediGuard DevSecOps – blocks release when critical security gates fail.
+# Intentional demo vulnerabilities in this repo are expected to FAIL several gates.
+
+name: MediGuard DevSecOps
+
+on:
+  push:
+    branches: [main, master]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  security-events: write
+
+env:
+  PYTHON_VERSION: "3.11"
+  IMAGE_NAME: mediguard-api
+
+jobs:
+  lint:
+    name: Lint (flake8)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install flake8
+      - run: flake8 app scripts tests
+
+  sast:
+    name: SAST (Bandit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install "bandit[toml]"
+      - run: mkdir -p reports
+      - name: Run Bandit (JSON report)
+        run: bandit -r app scripts -c .bandit -f json -o reports/bandit.json || true
+      - name: Gate – fail on HIGH severity
+        run: bandit -r app scripts -c .bandit -ll
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: bandit-report
+          path: reports/bandit.json
+
+  dependency-audit:
+    name: Dependency SCA (pip-audit)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: pip install pip-audit
+      - run: mkdir -p reports
+      - name: pip-audit JSON report
+        run: pip-audit -r requirements.txt --format json --output reports/pip-audit.json || true
+      - name: Gate – fail on known CVEs
+        run: pip-audit -r requirements.txt
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pip-audit-report
+          path: reports/pip-audit.json
+
+  secret-scan:
+    name: Secret scanning (Gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+      - uses: gitleaks/gitleaks-action@v2
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      - run: mkdir -p reports
+      - run: echo '{"tool":"gitleaks","status":"see job log"}' > reports/gitleaks.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: gitleaks-report
+          path: reports/gitleaks.json
+
+  unit-tests:
+    name: Unit tests + coverage
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - run: |
+          pip install -r requirements.txt -r requirements-dev.txt
+          python scripts/train_placeholder_model.py
+      - run: mkdir -p reports
+      - run: |
+          python -m pytest --cov-fail-under=80 --junitxml=reports/junit.xml
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: pytest-report
+          path: |
+            reports/junit.xml
+            coverage.xml
+
+  container-scan:
+    name: Container build + Trivy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build image
+        run: docker build --target runtime -t ${{ env.IMAGE_NAME }}:ci .
+      - name: Trivy scan (CRITICAL gate)
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          format: table
+          exit-code: 1
+          severity: CRITICAL
+          ignore-unfixed: true
+      - name: Trivy JSON report
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: ${{ env.IMAGE_NAME }}:ci
+          format: json
+          output: reports/trivy.json
+          severity: CRITICAL,HIGH,MEDIUM,LOW
+          ignore-unfixed: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: trivy-report
+          path: reports/trivy.json
+
+  dast:
+    name: DAST (OWASP ZAP baseline)
+    runs-on: ubuntu-latest
+    needs: [unit-tests]
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_ROOT_PASSWORD: root_ci_password
+          MYSQL_DATABASE: mediguard_db
+          MYSQL_USER: mediguard
+          MYSQL_PASSWORD: mediguard_pass
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd="mysqladmin ping -h localhost -umediguard -pmediguard_pass"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - name: Install API dependencies and seed DB
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq default-mysql-client
+          pip install -r requirements.txt
+          python scripts/train_placeholder_model.py
+          mysql -h 127.0.0.1 -P 3306 -u root -proot_ci_password < db/init.sql
+      - name: Start API
+        env:
+          FLASK_ENV: production
+          SECRET_KEY: ci-secret-key
+          JWT_SECRET: ci-jwt-secret
+          DB_HOST: 127.0.0.1
+          DB_PORT: "3306"
+          DB_USER: mediguard
+          DB_PASSWORD: mediguard_pass
+          DB_NAME: mediguard_db
+          LOG_FILE: logs/access.log
+          MODEL_PATH: app/model/heart_disease_model.pkl
+        run: |
+          mkdir -p logs
+          gunicorn --bind 127.0.0.1:5000 --workers 1 --timeout 60 run:app &
+          for i in $(seq 1 30); do
+            curl -sf http://127.0.0.1:5000/health && break
+            sleep 2
+          done
+          curl -sf http://127.0.0.1:5000/health
+      - name: ZAP baseline scan
+        run: |
+          mkdir -p reports
+          docker run --rm --network host \
+            -v "${{ github.workspace }}/reports:/zap/wrk:rw" \
+            ghcr.io/zaproxy/zaproxy:stable \
+            zap-baseline.py -t http://127.0.0.1:5000 -J /zap/wrk/zap.json -r /zap/wrk/zap.html \
+            -I || true
+      - name: Gate – fail on HIGH ZAP alerts
+        run: |
+          python scripts/check_zap_gate.py reports/zap.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: zap-report
+          path: |
+            reports/zap.json
+            reports/zap.html
+
+  release-security-report:
+    name: Release security report
+    runs-on: ubuntu-latest
+    needs:
+      - lint
+      - sast
+      - dependency-audit
+      - secret-scan
+      - unit-tests
+      - container-scan
+      - dast
+    if: always()
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ env.PYTHON_VERSION }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+          merge-multiple: true
+      - name: Aggregate scan results
+        run: |
+          mkdir -p reports
+          python scripts/generate_release_security_report.py \
+            --artifacts artifacts \
+            --out reports/release_security_report.md \
+            --json-out reports/release_security_report.json \
+            --lint "${{ needs.lint.result }}" \
+            --sast "${{ needs.sast.result }}" \
+            --sca "${{ needs.dependency-audit.result }}" \
+            --secrets "${{ needs.secret-scan.result }}" \
+            --tests "${{ needs.unit-tests.result }}" \
+            --container "${{ needs.container-scan.result }}" \
+            --dast "${{ needs.dast.result }}"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: release-security-report
+          path: |
+            reports/release_security_report.md
+            reports/release_security_report.json
+      - name: Block release if any gate failed
+        run: |
+          python -c "
+          import json, sys
+          data = json.load(open('reports/release_security_report.json'))
+          if data['release_decision'] != 'PASS':
+              print('RELEASE BLOCKED:', data['summary'])
+              sys.exit(1)
+          print('All security gates passed.')
+          "
