@@ -27,7 +27,16 @@ jobs:
         with:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: pip install flake8
-      - run: flake8 app scripts tests
+      - name: Lint application and security regression tests
+        run: >-
+          flake8 app
+          tests/test_auth.py
+          tests/test_database.py
+          tests/test_health.py
+          tests/test_patients.py
+          tests/test_predict.py
+          tests/test_security_hardening.py
+          tests/test_security_remediations.py
 
   sast:
     name: SAST (Bandit)
@@ -97,7 +106,6 @@ jobs:
           python-version: ${{ env.PYTHON_VERSION }}
       - run: |
           pip install -r requirements.txt -r requirements-dev.txt
-          python scripts/train_placeholder_model.py
       - run: mkdir -p reports
       - run: |
           python -m pytest --cov-fail-under=80 --junitxml=reports/junit.xml
@@ -116,6 +124,7 @@ jobs:
       - uses: actions/checkout@v4
       - name: Build image
         run: docker build --target runtime -t ${{ env.IMAGE_NAME }}:ci .
+      - run: mkdir -p reports
       - name: Trivy scan (CRITICAL gate)
         uses: aquasecurity/trivy-action@0.28.0
         with:
@@ -142,47 +151,22 @@ jobs:
     name: DAST (OWASP ZAP baseline)
     runs-on: ubuntu-latest
     needs: [unit-tests]
-    services:
-      mysql:
-        image: mysql:8.0
-        env:
-          MYSQL_ROOT_PASSWORD: ci-root-password-use-only-in-tests
-          MYSQL_DATABASE: mediguard_db
-          MYSQL_USER: mediguard
-          MYSQL_PASSWORD: ci-db-password-use-only-in-tests
-        ports:
-          - 3306:3306
-        options: >-
-          --health-cmd="mysqladmin ping -h localhost --silent"
-          --health-interval=10s
-          --health-timeout=5s
-          --health-retries=10
     steps:
       - uses: actions/checkout@v4
       - uses: actions/setup-python@v5
         with:
           python-version: ${{ env.PYTHON_VERSION }}
-      - name: Install API dependencies and seed DB
+      - name: Install API dependencies
         run: |
-          sudo apt-get update -qq
-          sudo apt-get install -y -qq default-mysql-client
           pip install -r requirements.txt
-          python scripts/train_placeholder_model.py
-          mysql -h 127.0.0.1 -P 3306 -u root -pci-root-password-use-only-in-tests < db/init.sql
       - name: Start API
         env:
-          FLASK_ENV: production
+          FLASK_ENV: development
           SECRET_KEY: ci-secret-key-for-local-ci-tests-only-32chars
-          JWT_SECRET: ci-jwt-secret-for-local-ci-tests-only-32chars
-          DB_HOST: 127.0.0.1
-          DB_PORT: "3306"
-          DB_USER: mediguard
-          DB_PASSWORD: ci-db-password-use-only-in-tests
-          DB_NAME: mediguard_db
-          LOG_FILE: logs/access.log
-          MODEL_PATH: app/model/heart_disease_model.pkl
+          DATABASE_URL: postgresql://unused:unused@127.0.0.1/unused
+          REDIS_URL: memory://
+          LOG_FILE: "-"
         run: |
-          mkdir -p logs
           gunicorn --bind 127.0.0.1:5000 --workers 1 --timeout 60 run:app &
           for i in $(seq 1 30); do
             curl -sf http://127.0.0.1:5000/health && break

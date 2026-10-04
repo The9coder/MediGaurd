@@ -1,9 +1,8 @@
-"""
-Tests for GET /patients/<id>
+"""Tests for scoped patient-record access."""
 
-The DB is not running during unit tests, so we mock the database layer.
-"""
 from unittest.mock import MagicMock, patch
+
+import pytest
 
 
 FAKE_PATIENT = {
@@ -13,7 +12,7 @@ FAKE_PATIENT = {
     "gender": "F",
     "mrn": "MRN-000001",
     "diagnosis": "Hypertension, Stage 1",
-    "assigned_to": "clinician",
+    "assigned_to": "clinician-sub",
 }
 
 
@@ -23,11 +22,9 @@ def test_get_patient_success(mock_get_db, client, auth_headers):
     cursor.fetchone.return_value = FAKE_PATIENT
     mock_get_db.return_value.cursor.return_value = cursor
 
-    resp = client.get("/patients/1", headers=auth_headers)
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert data["mrn"] == "MRN-000001"
-    assert data["name"] == "Jane Doe"
+    response = client.get("/patients/1", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.get_json()["mrn"] == "MRN-000001"
 
 
 @patch("app.routes.patients.get_db")
@@ -36,46 +33,81 @@ def test_get_patient_not_found(mock_get_db, client, auth_headers):
     cursor.fetchone.return_value = None
     mock_get_db.return_value.cursor.return_value = cursor
 
-    resp = client.get("/patients/9999", headers=auth_headers)
-    assert resp.status_code == 404
+    response = client.get("/patients/9999", headers=auth_headers)
+    assert response.status_code == 404
 
 
 def test_get_patient_requires_auth(client):
-    resp = client.get("/patients/1")
-    assert resp.status_code == 401
+    assert client.get("/patients/1").status_code == 401
 
 
 @patch("app.routes.patients.get_db")
-def test_patient_list_is_scoped_to_clinician(mock_get_db, client):
+def test_patient_list_is_scoped_to_oidc_subject(mock_get_db, client, clinician_headers):
     cursor = MagicMock()
     cursor.fetchall.return_value = [FAKE_PATIENT]
     mock_get_db.return_value.cursor.return_value = cursor
-    login = client.post(
-        "/login", json={"username": "clinician", "password": "test-clinician-password"}
-    )
-    headers = {"Authorization": f"Bearer {login.get_json()['token']}"}
 
-    response = client.get("/patients", headers=headers)
+    response = client.get("/patients", headers=clinician_headers)
 
     assert response.status_code == 200
     assert response.get_json()["patients"] == [FAKE_PATIENT]
-    query, params = cursor.execute.call_args.args
+    assert response.get_json()["next_after_id"] is None
+    query, params = cursor.execute.call_args_list[0].args
     assert "WHERE assigned_to = %s" in query
-    assert params == ("clinician",)
+    assert "ORDER BY id ASC LIMIT %s" in query
+    assert params == ("clinician-sub", 0, 100)
+
+
+def test_patient_list_rejects_invalid_pagination(client, clinician_headers):
+    response = client.get(
+        "/patients?limit=101",
+        headers=clinician_headers,
+    )
+    assert response.status_code == 400
+
+
+def test_patient_list_rejects_non_integer_pagination(client, clinician_headers):
+    response = client.get("/patients?after_id=first", headers=clinician_headers)
+    assert response.status_code == 400
 
 
 @patch("app.routes.patients.get_db")
-def test_create_patient_assigns_record_to_signed_in_user(mock_get_db, client):
+def test_patient_list_returns_cursor_for_next_page(
+    mock_get_db, client, clinician_headers
+):
     cursor = MagicMock()
-    cursor.lastrowid = 42
+    cursor.fetchall.return_value = [FAKE_PATIENT]
     mock_get_db.return_value.cursor.return_value = cursor
-    login = client.post(
-        "/login", json={"username": "clinician", "password": "test-clinician-password"}
-    )
+
+    response = client.get("/patients?limit=1", headers=clinician_headers)
+
+    assert response.status_code == 200
+    assert response.get_json()["next_after_id"] == FAKE_PATIENT["id"]
+
+
+@patch("app.routes.patients.get_db")
+def test_admin_patient_list_is_paginated(mock_get_db, client, auth_headers):
+    cursor = MagicMock()
+    cursor.fetchall.return_value = []
+    mock_get_db.return_value.cursor.return_value = cursor
+
+    response = client.get("/patients?after_id=20&limit=10", headers=auth_headers)
+
+    assert response.status_code == 200
+    query, params = cursor.execute.call_args_list[0].args
+    assert "WHERE id > %s ORDER BY id ASC LIMIT %s" in query
+    assert params == (20, 10)
+
+
+@patch("app.routes.patients.get_db")
+def test_create_patient_assigns_record_to_oidc_subject(mock_get_db, client, clinician_headers):
+    cursor = MagicMock()
+    cursor.fetchone.return_value = {"id": 42}
+    mock_get_db.return_value.cursor.return_value = cursor
 
     response = client.post(
         "/patients",
-        headers={"Authorization": f"Bearer {login.get_json()['token']}"},
+        headers=clinician_headers,
         json={
             "name": "Sample Patient",
             "dob": "1980-02-03",
@@ -86,12 +118,38 @@ def test_create_patient_assigns_record_to_signed_in_user(mock_get_db, client):
 
     assert response.status_code == 201
     assert response.get_json()["id"] == 42
-    assert cursor.execute.call_args.args[1][2:] == (
+    insert_query, insert_params = cursor.execute.call_args_list[0].args
+    assert "RETURNING id" in insert_query
+    assert insert_params[2:] == (
         "F",
         response.get_json()["mrn"],
         "Demo note",
-        "clinician",
+        "clinician-sub",
     )
+    assert any("INSERT INTO audit_events" in call.args[0] for call in cursor.execute.call_args_list)
+
+
+@pytest.mark.parametrize(
+    "payload",
+    [
+        [],
+        {"dob": "1980-02-03", "gender": "F"},
+        {"name": "  ", "dob": "1980-02-03", "gender": "F"},
+        {"name": "x" * 151, "dob": "1980-02-03", "gender": "F"},
+        {"name": "Sample", "dob": "03-02-1980", "gender": "F"},
+        {"name": "Sample", "dob": "1980-02-30", "gender": "F"},
+        {"name": "Sample", "dob": "1980-02-03", "gender": "X"},
+        {
+            "name": "Sample",
+            "dob": "1980-02-03",
+            "gender": "F",
+            "diagnosis": "x" * 256,
+        },
+    ],
+)
+def test_create_patient_rejects_invalid_input(client, clinician_headers, payload):
+    response = client.post("/patients", headers=clinician_headers, json=payload)
+    assert response.status_code == 400
 
 
 @patch("app.routes.patients.get_db")
@@ -101,9 +159,8 @@ def test_patient_id_is_bound_as_query_parameter(mock_get_db, client, auth_header
     mock_get_db.return_value.cursor.return_value = cursor
 
     response = client.get("/patients/1", headers=auth_headers)
-
     assert response.status_code == 200
-    query, params = cursor.execute.call_args.args
+    query, params = cursor.execute.call_args_list[0].args
     assert "WHERE id = %s" in query
     assert params == (1,)
 

@@ -1,179 +1,54 @@
-How to Fix the Security Weaknesses in MediGuard
+MediGuard Security Status and Production Readiness Notes
 
-This guide covers weaknesses from the intentionally vulnerable main branch and additional production-hardening steps. The security-fixes branch applies the core remediations; this demo is still not suitable for real patient information or clinical use.
+This repository is a prototype and must not be treated as a production-ready healthcare system. It has not been independently audited, assessed for DPDP compliance, clinically validated, or reviewed for applicable medical-device obligations. Do not use real patient data or clinical predictions until those reviews are complete.
 
-1) Remove hardcoded secrets and use environment-based configuration
+Security controls implemented in this write
 
-Status:
-- The security-fixes branch requires explicit production app and database secrets and no longer defines an unused API-key setting.
-- Optional demo account passwords have no committed defaults.
+1. Authentication and sessions
+- Local username/password registration and demo accounts were removed.
+- The portal uses an OIDC authorization-code flow through a configured identity provider.
+- The identity provider must enforce MFA and manage account activation, deactivation, and role membership.
+- Application sessions are stored server-side in Redis; browser storage contains no access token.
+- Production uses Secure, HttpOnly, SameSite cookies with a short session lifetime.
+- OIDC callback state is validated by Authlib.
+- State-changing browser requests require a CSRF token.
 
-Fix:
-- Move all secrets to environment variables or a secure secret manager (AWS Secrets Manager, Azure Key Vault, HashiCorp Vault, Docker secrets, or equivalent).
-- Use only the secrets the application requires:
-  - JWT_SECRET
-  - SECRET_KEY
-  - DB_PASSWORD
-- Load them at runtime from a secret manager or protected environment and fail fast if they are missing in production.
-- Do not commit secrets to Git.
-- Add a .env.example file with placeholders instead of real values.
+2. Patient data access
+- Patient ownership uses the OIDC subject identifier, not a user-supplied owner.
+- Routes apply subject-scoped queries and PostgreSQL row-level security provides an additional boundary.
+- Admin access is granted only when the configured signed OIDC role claim contains the configured admin role.
+- Patient creation and prediction features are schema/range checked.
 
-Example:
-  $env:JWT_SECRET = "replace-with-a-random-secret-of-at-least-32-characters"
-  $env:DB_PASSWORD = "replace-with-a-strong-database-password"
+3. Database and audit controls
+- Persistence is PostgreSQL; runtime schema creation has been removed.
+- The intended app role receives SELECT/INSERT on patient and prediction data.
+- Audit events contain action and resource metadata only, not patient names, diagnoses, or prediction inputs.
+- Audit rows are INSERT-only for the runtime role and committed with the operation.
+- Production PostgreSQL connections must use TLS.
+- Production deployments still need managed encryption at rest, encrypted backups, monitoring, migration controls, and verified role grants/RLS.
 
-2) Use parameterized queries everywhere to prevent SQL injection
+4. Application and deployment hardening
+- Generic 500 and database-unavailable responses do not disclose internals.
+- Security headers, request-size limits, no-store responses, and endpoint-only access logging are enabled.
+- Rate limiting uses shared Redis storage rather than process-local counters.
+- The container runs as non-root, read-only, with dropped Linux capabilities and no direct public bind by default.
+- Secrets are explicit deployment inputs; no sample secret is a valid production credential.
 
-Status:
-- The main branch demonstrates SQL injection in the patient ID lookup.
-- The security-fixes branch restricts IDs to integers and binds values as SQL parameters.
+5. Prediction safety gate
+- Predictions are disabled by default in production.
+- Enabling them requires a pinned model SHA-256 and a validation-reference identifier.
+- A hash only establishes artifact integrity. It does not establish that a model is safe, clinically accurate, unbiased, calibrated, or approved.
+- The current sample model is not validated for Indian patients and must not inform diagnosis or treatment.
 
-Fix:
-- Use parameterized SQL with placeholders and pass values as parameters.
-- Avoid constructing SQL statements with user-controlled text.
-- Keep query structure fixed and values bound separately.
+Remaining work before real-data use
 
-Example:
-  cursor.execute(
-      "SELECT * FROM patients WHERE id = %s AND assigned_to = %s",
-      (patient_id, username),
-  )
+1. Obtain an independent security review and resolve findings; perform threat modeling and penetration testing.
+2. Have qualified counsel assess the DPDP Act/rules, lawful basis, notices, retention/deletion, processors, breach handling, and cross-border transfers.
+3. Have clinical and regulatory specialists validate the intended use, populations, model performance, calibration, bias, usability, monitoring, fallback, and applicable CDSCO/medical-device requirements.
+4. Configure and test a production OIDC provider with MFA, role governance, deprovisioning, recovery, and session revocation.
+5. Deploy managed PostgreSQL and Redis with TLS, private network access, encryption at rest, secret rotation, restricted operator access, encrypted backups, and tested restoration.
+6. Apply PostgreSQL schema changes using a privileged migration identity. Confirm the runtime role is not an owner or BYPASSRLS role and cannot update/delete audit rows.
+7. Configure trusted ingress/TLS, monitoring, audit retention, incident response, alerting, and controlled access to logs.
+8. Add and enforce CI checks for tests, SAST, dependency scanning, secret scanning, container scanning, and DAST.
 
-- Review all SQL statements for any use of f-strings or string concatenation.
-
-3) Keep verbose error messages and stack traces out of API responses
-
-Status:
-- The baseline already returned a generic 500 response. The security-fixes branch preserves this and adds a regression test.
-
-Fix:
-- Log the traceback server-side only.
-- Return a generic error message to the client, such as:
-  {"error": "Internal server error"}
-- Use proper error logging with structured logs.
-- In production, do not expose file names, library versions, or stack traces via HTTP responses.
-
-Example:
-  @app.errorhandler(500)
-  def internal_error(error):
-      app.logger.exception("Unhandled exception")
-      return jsonify({"error": "Internal server error"}), 500
-
-4) Add rate limiting and lockout for authentication attempts
-
-Problem:
-- Login endpoints accept weak credentials and do not limit repeated failed attempts.
-- Attackers can brute-force user accounts.
-
-Fix:
-- Add login throttling per IP and per username.
-- Lock accounts temporarily after repeated failed attempts.
-- Log suspicious login activity to a security monitoring system.
-- Use MFA for admin and privileged accounts.
-- Avoid exposing whether the username exists or whether the password is wrong in a way that helps attackers enumerate users.
-
-Example protections:
-- 5 failed attempts = 15-minute temporary lockout
-- 10 failed attempts = manual review / alerting
-- Rate limiting middleware or Flask-Limiter
-
-5) Upgrade vulnerable dependencies
-
-Status:
-- The security-fixes branch updates Flask, Werkzeug, and Jinja2. Keep running dependency audits to catch new advisories.
-
-Fix:
-- Update to supported, patched versions.
-- Run dependency scanning regularly with tools such as:
-  - pip-audit
-  - safety
-  - Dependabot
-  - GitHub security alerts
-- Rebuild and redeploy containers after updates.
-
-6) Improve JWT validation and session handling
-
-Problem:
-- Defaults in app/config.py are weak and not suitable for production.
-- JWT uses secret values from source and may not be protected with proper rotation and validation.
-
-Fix:
-- Use strong random secrets and rotate them.
-- Validate token content thoroughly.
-- Enforce short access tokens and refresh tokens when needed.
-- Store tokens appropriately and avoid accepting expired or malformed tokens.
-- Add proper logout/revocation if tokens are used beyond basic demo behavior.
-
-7) Validate all inputs and enforce least privilege
-
-Problem:
-- Some API data is not strictly validated or role-scoped.
-- The app should ensure users can only access their own patient records unless they are admin.
-
-Fix:
-- Validate all request payloads carefully.
-- Enforce strict schema checks.
-- Use RBAC (role-based access control) consistently.
-- Confirm admin-only operations are restricted to admin roles.
-- Apply principle of least privilege to database accounts and services.
-
-8) Harden the app configuration for production
-
-Problem:
-- The project is configured like a local development demo.
-
-Fix:
-- Disable debug mode in production.
-- Set secure cookie attributes where applicable.
-- Add security headers such as Content-Security-Policy, X-Frame-Options, and Referrer-Policy.
-- Run behind HTTPS only.
-- Use secure database connections and encrypted storage for data at rest and in transit.
-- Enable WAF or reverse proxy protections when deployed.
-
-9) Add automated security checks to CI/CD
-
-Problem:
-- The repo includes security gates in CI, but they are meant to catch issues after the fact.
-
-Fix:
-- Ensure these automated checks run on every commit and pull request:
-  - Bandit (SAST)
-  - pip-audit / safety (dependency scanning)
-  - detect-secrets / gitleaks (secret scanning)
-  - pytest with coverage enforcement
-  - linting (flake8 / black)
-  - DAST checks such as OWASP ZAP
-- Fail the build when any critical issue is found.
-
-10) Use secure logging and monitoring
-
-Problem:
-- Logs are useful for detection, but they should not leak sensitive details.
-
-Fix:
-- Log without exposing secrets, internal stack traces, or patient data.
-- Store logs in secure locations with access restrictions.
-- Monitor for failed login bursts, injection attempts, abnormal record access, and privilege abuse.
-- Integrate with SIEM or detection tools for alerts.
-
-Recommended fix order
-
-1. Remove hardcoded secrets
-2. Fix SQL injection vectors
-3. Block stack trace exposure
-4. Add brute-force protection and rate limiting
-5. Upgrade vulnerable packages
-6. Add production security hardening
-7. Add CI/CD security gates and security monitoring
-
-Final note
-
-This repo is a controlled vulnerability lab. Real production systems should not retain these weaknesses. The safest path is to turn the project into a secure-by-default application, then run automated security scanning before every release.
-
-If you want an even more concrete remediation plan, the next step would be to update the code in the following order:
-- app/config.py
-- app/routes/patients.py
-- app/factory.py
-- app/routes/auth.py
-- requirements.txt
-- CI workflow and security checks
+The Docker Compose stack is a local integration example only. It uses non-TLS internal service connections and does not supply managed storage encryption, deployment identity management, production backups, monitoring, or regulatory controls. Never use it as-is for real health information.

@@ -1,29 +1,38 @@
-"""JWT-protected patient records."""
+"""OIDC-authenticated, subject-scoped patient records."""
 import re
 import secrets
 from datetime import date
 
 from flask import Blueprint, current_app, jsonify, request
-from mysql.connector import IntegrityError, Error as MySQLError
+from psycopg import IntegrityError, Error as DatabaseError
 
-from app.auth import jwt_required
-from app.database import get_db
+from app.auth import auth_required
+from app.database import get_db, write_audit
 
 patients_bp = Blueprint("patients", __name__)
 
 
 def _patient_scope():
-    payload = request.jwt_payload
+    payload = request.principal
     if payload.get("role") == "admin":
         return False, ()
     return True, (payload["sub"],)
 
 
 @patients_bp.route("/patients", methods=["GET", "POST"])
-@jwt_required
+@auth_required
 def patients():
+    if (
+        current_app.config.get("DEPLOYMENT_ENV") == "production"
+        and not current_app.config["ENABLE_PATIENT_RECORDS"]
+    ):
+        return jsonify({
+            "error": "Patient-record service is not enabled for this deployment"
+        }), 503
     if request.method == "POST":
-        data = request.get_json(silent=True) or {}
+        data = request.get_json(silent=True)
+        if not isinstance(data, dict):
+            return jsonify({"error": "Request body must be a JSON object"}), 400
         name = data.get("name")
         dob = data.get("dob")
         gender = data.get("gender")
@@ -42,62 +51,86 @@ def patients():
         if not isinstance(diagnosis, str) or len(diagnosis) > 255:
             return jsonify({"error": "Diagnosis must be 255 characters or fewer"}), 400
 
-        username = request.jwt_payload["sub"]
+        username = request.principal["sub"]
         mrn = f"MG-{secrets.token_hex(5).upper()}"
         db = get_db()
         cursor = db.cursor()
         try:
             cursor.execute(
                 "INSERT INTO patients (name, dob, gender, mrn, diagnosis, assigned_to) "
-                "VALUES (%s, %s, %s, %s, %s, %s)",
+                "VALUES (%s, %s, %s, %s, %s, %s) RETURNING id",
                 (name.strip(), dob, gender, mrn, diagnosis.strip(), username),
             )
-            patient_id = cursor.lastrowid
+            patient_id = cursor.fetchone()["id"]
+            write_audit(cursor, "patient.create", "patient", patient_id)
             db.commit()
-        except IntegrityError:
+        except IntegrityError as error:
             db.rollback()
-            current_app.logger.exception("Patient record could not be saved")
+            current_app.logger.warning(
+                "Patient record could not be saved (%s)", error.sqlstate
+            )
             return jsonify({"error": "Unable to save patient record; please retry"}), 409
-        except MySQLError:
+        except DatabaseError as error:
             db.rollback()
-            current_app.logger.exception("Patient record insert failed")
+            current_app.logger.error("Patient record insert failed (%s)", error.sqlstate)
             return jsonify({"error": "Patient record service is temporarily unavailable"}), 503
         finally:
             cursor.close()
 
         return jsonify({"id": patient_id, "mrn": mrn}), 201
 
+    try:
+        limit = int(request.args.get("limit", "100"))
+        after_id = int(request.args.get("after_id", "0"))
+    except ValueError:
+        return jsonify({"error": "Pagination values must be integers"}), 400
+    if not 1 <= limit <= 100 or after_id < 0:
+        return jsonify({"error": "Pagination values are outside the allowed range"}), 400
+
     scoped, params = _patient_scope()
     db = get_db()
-    cursor = db.cursor(dictionary=True)
+    cursor = db.cursor()
     try:
         if scoped:
             cursor.execute(
                 "SELECT id, name, dob, gender, mrn, diagnosis, assigned_to, created_at "
-                "FROM patients WHERE assigned_to = %s ORDER BY id ASC",
-                params,
+                "FROM patients WHERE assigned_to = %s AND id > %s "
+                "ORDER BY id ASC LIMIT %s",
+                (*params, after_id, limit),
             )
         else:
             cursor.execute(
                 "SELECT id, name, dob, gender, mrn, diagnosis, assigned_to, created_at "
-                "FROM patients ORDER BY id ASC"
+                "FROM patients WHERE id > %s ORDER BY id ASC LIMIT %s",
+                (after_id, limit),
             )
         records = cursor.fetchall()
-    except MySQLError:
-        current_app.logger.exception("Patient list query failed")
+        write_audit(cursor, "patient.list", "patient")
+        db.commit()
+    except DatabaseError as error:
+        db.rollback()
+        current_app.logger.error("Patient list query failed (%s)", error.sqlstate)
         return jsonify({"error": "Patient records are temporarily unavailable"}), 503
     finally:
         cursor.close()
 
-    return jsonify({"patients": records}), 200
+    next_after_id = records[-1]["id"] if len(records) == limit else None
+    return jsonify({"patients": records, "next_after_id": next_after_id}), 200
 
 
 @patients_bp.route("/patients/<int:patient_id>", methods=["GET"])
-@jwt_required
+@auth_required
 def get_patient(patient_id):
+    if (
+        current_app.config.get("DEPLOYMENT_ENV") == "production"
+        and not current_app.config["ENABLE_PATIENT_RECORDS"]
+    ):
+        return jsonify({
+            "error": "Patient-record service is not enabled for this deployment"
+        }), 503
     scoped, params = _patient_scope()
     db = get_db()
-    cursor = db.cursor(dictionary=True)
+    cursor = db.cursor()
     try:
         if scoped:
             cursor.execute(
@@ -112,8 +145,11 @@ def get_patient(patient_id):
                 (patient_id,),
             )
         patient = cursor.fetchone()
-    except MySQLError:
-        current_app.logger.exception("Patient lookup failed")
+        write_audit(cursor, "patient.read", "patient", patient_id)
+        db.commit()
+    except DatabaseError as error:
+        db.rollback()
+        current_app.logger.error("Patient lookup failed (%s)", error.sqlstate)
         return jsonify({"error": "Patient records are temporarily unavailable"}), 503
     finally:
         cursor.close()

@@ -36,35 +36,10 @@
         </section>
         <section id="login-card" class="panel">
           <div class="panel-header">
-            <h2>Secure sign in</h2>
-            <p>Use the demo credentials provided in the project README.</p>
+            <h2>Sign in securely</h2>
+            <p>Authenticate through your organization’s identity provider.</p>
           </div>
-
-          <form id="login-form" class="stack-form">
-            <label>
-              <span>Username</span>
-              <input type="text" id="username" name="username" value="clinician" required />
-            </label>
-            <label>
-              <span>Password</span>
-              <input type="password" id="password" name="password" value="clinic456" required />
-            </label>
-            <button type="submit" class="primary-btn">Sign in</button>
-            <button type="button" id="show-register-btn" class="secondary-btn">Create account</button>
-          </form>
-
-          <form id="register-form" class="stack-form hidden">
-            <label>
-              <span>Username</span>
-              <input type="text" id="register-username" minlength="3" maxlength="50" required />
-            </label>
-            <label>
-              <span>Password (at least 8 characters)</span>
-              <input type="password" id="register-password" minlength="8" required />
-            </label>
-            <button type="submit" class="primary-btn">Create account</button>
-            <button type="button" id="show-login-btn" class="secondary-btn">Back to sign in</button>
-          </form>
+          <button type="button" id="oidc-login-btn" class="primary-btn">Continue to sign in</button>
         </section>
 
         <section id="dashboard" class="hidden">
@@ -160,30 +135,10 @@
                 <tbody id="patient-table-body"><tr><td colspan="7">Loading patient records…</td></tr></tbody>
               </table>
             </div>
+            <button id="load-more-patients-btn" class="secondary-btn hidden" type="button">Load more records</button>
+
           </section>
 
-          <section id="prediction-history-panel" class="panel">
-            <div class="panel-header admin-header">
-              <div>
-                <h2>Prediction history</h2>
-                <p>Saved predictions for your account.</p>
-              </div>
-              <button id="refresh-predictions-btn" class="secondary-btn" type="button">Refresh history</button>
-            </div>
-            <div class="table-wrap">
-              <table class="patient-table">
-                <thead>
-                  <tr>
-                    <th>Date</th>
-                    <th>Risk</th>
-                    <th>Probability</th>
-                    <th>Prediction</th>
-                  </tr>
-                </thead>
-                <tbody id="prediction-table-body"><tr><td colspan="4">Loading prediction history…</td></tr></tbody>
-              </table>
-            </div>
-          </section>
         </section>
       </main>
 
