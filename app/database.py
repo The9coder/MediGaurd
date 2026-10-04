@@ -1,53 +1,59 @@
-"""
-Database connection helper (MySQL via mysql-connector-python)
-"""
-import mysql.connector
-from flask import current_app, g
+"""PostgreSQL connection and minimal audit-event helpers."""
+
+from psycopg.rows import dict_row
+from psycopg_pool import ConnectionPool
+from flask import current_app, g, has_request_context, request, session
 
 
-def ensure_app_tables(cursor):
-    """Create app-owned tables for existing installations as well as fresh DBs."""
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS app_users (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(50) NOT NULL UNIQUE,
-            password_hash VARCHAR(255) NOT NULL,
-            role VARCHAR(20) NOT NULL DEFAULT 'clinician',
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
-    )
-    cursor.execute(
-        """
-        CREATE TABLE IF NOT EXISTS prediction_history (
-            id INT AUTO_INCREMENT PRIMARY KEY,
-            username VARCHAR(50) NOT NULL,
-            features JSON NOT NULL,
-            prediction TINYINT NOT NULL,
-            risk_probability DECIMAL(6, 4) NOT NULL,
-            risk_label VARCHAR(10) NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            INDEX idx_prediction_username (username)
-        ) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4
-        """
+def init_database(app):
+    """Configure a per-process connection pool; schema is managed out of band."""
+    app.extensions["db_pool"] = ConnectionPool(
+        conninfo=app.config["DATABASE_URL"],
+        min_size=1,
+        max_size=10,
+        kwargs={
+            "row_factory": dict_row,
+            "sslmode": app.config["DB_SSLMODE"],
+            "connect_timeout": 5,
+        },
+        open=False,
     )
 
 
 def get_db():
-    """Return a per-request MySQL connection, stored in Flask's g object."""
+    """Return a pooled PostgreSQL connection for the current request."""
     if "db" not in g:
-        g.db = mysql.connector.connect(
-            host=current_app.config["DB_HOST"],
-            port=current_app.config["DB_PORT"],
-            user=current_app.config["DB_USER"],
-            password=current_app.config["DB_PASSWORD"],
-            database=current_app.config["DB_NAME"],
-        )
+        g.db = current_app.extensions["db_pool"].getconn()
+        principal = session.get("principal") if has_request_context() else None
+        if isinstance(principal, dict):
+            with g.db.cursor() as cursor:
+                cursor.execute(
+                    "SELECT set_config('app.subject_id', %s, true), "
+                    "set_config('app.role', %s, true)",
+                    (principal.get("sub", ""), principal.get("role", "clinician")),
+                )
     return g.db
 
 
-def close_db(e=None):
+def close_db(error=None):
     db = g.pop("db", None)
-    if db is not None and db.is_connected():
-        db.close()
+    if db is not None:
+        current_app.extensions["db_pool"].putconn(db)
+
+
+def write_audit(cursor, action: str, resource_type: str, resource_id=None) -> None:
+    """Write a minimal audit event; never include patient values or request bodies."""
+    principal = session.get("principal", {})
+    cursor.execute(
+        """
+        INSERT INTO audit_events (actor_sub, action, resource_type, resource_id, source_ip)
+        VALUES (%s, %s, %s, %s, %s)
+        """,
+        (
+            principal.get("sub", "unknown"),
+            action,
+            resource_type,
+            str(resource_id) if resource_id is not None else None,
+            request.remote_addr,
+        ),
+    )

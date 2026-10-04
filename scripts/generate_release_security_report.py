@@ -160,10 +160,10 @@ def build_report(
         "container": trivy,
         "dast": zap,
         "remediation_notes": [
-            "SQL injection: parameterise queries in app/routes/patients.py.",
-            "Hardcoded secret: move INTERNAL_API_KEY to a secrets manager.",
-            "Outdated deps: upgrade Flask/Werkzeug/Jinja2 and re-run pip-audit.",
-            "Verbose 500 errors: return generic messages in app/factory.py.",
+            "Keep patient identifiers parameterised in app/routes/patients.py.",
+            "Provide strong production secrets through the deployment secret store.",
+            "Run pip-audit regularly and keep dependencies patched.",
+            "Keep detailed exception information in server-side logs only.",
         ],
     }
 

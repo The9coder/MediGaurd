@@ -1,59 +1,93 @@
-version: "3.9"
-
 services:
-  # ── MySQL Database ─────────────────────────────────────────────────────────
   db:
-    image: mysql:8.0
-    container_name: mediguard-db
+    image: postgres:16-alpine
     restart: unless-stopped
     environment:
-      MYSQL_ROOT_PASSWORD: root_password_change_me
-      MYSQL_DATABASE: mediguard_db
-      MYSQL_USER: mediguard
-      MYSQL_PASSWORD: mediguard_pass
-    ports:
-      - "3306:3306"
+      POSTGRES_USER: ${POSTGRES_ADMIN_USER:-postgres}
+      POSTGRES_PASSWORD: ${POSTGRES_ADMIN_PASSWORD:?Set POSTGRES_ADMIN_PASSWORD}
+      POSTGRES_DB: mediguard
+      DB_USER: ${DB_USER:-mediguard_app}
+      DB_PASSWORD: ${DB_PASSWORD:?Set DB_PASSWORD}
     volumes:
-      - mysql_data:/var/lib/mysql
-      - ./db/init.sql:/docker-entrypoint-initdb.d/init.sql:ro
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/schema.sql:ro
+      - ./db/init.sh:/docker-entrypoint-initdb.d/10-create-app-role.sh:ro
     healthcheck:
-      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-u", "mediguard", "-pmediguard_pass"]
+      test: ["CMD-SHELL", "pg_isready -U \"$${POSTGRES_USER}\" -d \"$${POSTGRES_DB}\""]
       interval: 10s
       timeout: 5s
       retries: 5
+    networks:
+      - data
 
-  # ── Flask API ──────────────────────────────────────────────────────────────
+  redis:
+    image: redis:7-alpine
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD:?Set REDIS_PASSWORD}"]
+    volumes:
+      - redis_data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "redis-cli -a \"$${REDIS_PASSWORD}\" ping | grep -q PONG"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    environment:
+      REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD}
+    networks:
+      - data
+
   api:
     build:
       context: .
       target: runtime
-    container_name: mediguard-api
     restart: unless-stopped
     depends_on:
       db:
         condition: service_healthy
+      redis:
+        condition: service_healthy
     environment:
-      FLASK_ENV: development
-      SECRET_KEY: change-me-in-production
-      JWT_SECRET: change-me-jwt-secret
-      DB_HOST: db
-      DB_PORT: "3306"
-      DB_USER: mediguard
-      DB_PASSWORD: mediguard_pass
-      DB_NAME: mediguard_db
-      LOG_FILE: /app/logs/access.log
-      MODEL_PATH: /app/app/model/heart_disease_model.pkl
+      FLASK_ENV: ${FLASK_ENV:-development}
+      SECRET_KEY: ${SECRET_KEY:?Set SECRET_KEY}
+      OIDC_ISSUER: ${OIDC_ISSUER:?Set OIDC_ISSUER}
+      OIDC_CLIENT_ID: ${OIDC_CLIENT_ID:?Set OIDC_CLIENT_ID}
+      OIDC_CLIENT_SECRET: ${OIDC_CLIENT_SECRET:?Set OIDC_CLIENT_SECRET}
+      OIDC_ADMIN_ROLE: ${OIDC_ADMIN_ROLE:-admin}
+      OIDC_ROLE_CLAIM: ${OIDC_ROLE_CLAIM:-roles}
+      TRUSTED_PROXY_HOPS: ${TRUSTED_PROXY_HOPS:-0}
+      TRUSTED_HOSTS: ${TRUSTED_HOSTS:-localhost,127.0.0.1}
+      DATABASE_URL: ${DATABASE_URL:?Set DATABASE_URL using the mediguard_app role}
+      DB_SSLMODE: ${DB_SSLMODE:-disable}
+      REDIS_URL: ${REDIS_URL:?Set REDIS_URL}
+      ENABLE_PATIENT_RECORDS: ${ENABLE_PATIENT_RECORDS:-false}
+      PATIENT_DATA_GOVERNANCE_REFERENCE: ${PATIENT_DATA_GOVERNANCE_REFERENCE:-}
+      ENABLE_PREDICTIONS: ${ENABLE_PREDICTIONS:-false}
+      MODEL_SHA256: ${MODEL_SHA256:-}
+      MODEL_VALIDATION_REFERENCE: ${MODEL_VALIDATION_REFERENCE:-}
+      LOG_FILE: "-"
     ports:
-      - "5000:5000"
-    volumes:
-      - ./logs:/app/logs
-      - ./app/model:/app/app/model
+      - "127.0.0.1:5000:5000"
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
     healthcheck:
-      test: ["CMD", "python", "-c",
-             "import urllib.request; urllib.request.urlopen('http://localhost:5000/health')"]
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:5000/ready')"]
       interval: 30s
       timeout: 5s
       retries: 3
+    networks:
+      - data
+      - egress
 
 volumes:
-  mysql_data:
+  postgres_data:
+  redis_data:
+
+networks:
+  data:
+    internal: true
+  egress:

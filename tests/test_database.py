@@ -1,5 +1,8 @@
-"""Tests for app/database.py connection lifecycle."""
+"""Tests for PostgreSQL connection lifecycle helpers."""
+
 from unittest.mock import MagicMock, patch
+
+from flask import session
 
 from app.database import close_db, get_db
 
@@ -9,15 +12,32 @@ def test_close_db_when_no_connection(app):
         close_db()
 
 
-@patch("app.database.mysql.connector.connect")
-def test_get_db_and_close(mock_connect, app):
-    mock_db = MagicMock()
-    mock_db.is_connected.return_value = True
-    mock_connect.return_value = mock_db
+def test_get_db_and_close_returns_connection_to_pool(app):
+    mock_connection = MagicMock()
+    pool = app.extensions["db_pool"]
+    with patch.object(pool, "getconn", return_value=mock_connection) as getconn:
+        with patch.object(pool, "putconn") as putconn:
+            with app.app_context():
+                first = get_db()
+                second = get_db()
+                assert first is second
+                getconn.assert_called_once_with()
+                close_db()
+                putconn.assert_called_once_with(mock_connection)
 
-    with app.app_context():
-        db1 = get_db()
-        db2 = get_db()
-        assert db1 is db2
-        close_db()
-        mock_db.close.assert_called_once()
+
+def test_get_db_sets_transaction_scoped_rls_identity(app):
+    connection = MagicMock()
+    pool = app.extensions["db_pool"]
+    with patch.object(pool, "getconn", return_value=connection):
+        with patch.object(pool, "putconn"):
+            with app.test_request_context("/patients"):
+                session["principal"] = {"sub": "clinician-sub", "role": "clinician"}
+                get_db()
+                (
+                    query,
+                    params,
+                ) = connection.cursor.return_value.__enter__.return_value.execute.call_args.args
+                assert "set_config('app.subject_id'" in query
+                assert params == ("clinician-sub", "clinician")
+                close_db()

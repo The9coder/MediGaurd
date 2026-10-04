@@ -1,107 +1,106 @@
-"""
-/register and /login – create accounts and issue JWTs
-"""
+"""OIDC login and browser-session endpoints."""
+
 import logging
-import re
+import secrets
 
-from flask import Blueprint, current_app, jsonify, request
-from mysql.connector import IntegrityError, Error as MySQLError
-from werkzeug.security import check_password_hash, generate_password_hash
+from authlib.integrations.base_client.errors import OAuthError
+from flask import Blueprint, current_app, jsonify, redirect, session, url_for
+from psycopg import Error as DatabaseError
+from psycopg_pool import PoolTimeout
 
-from app.auth import generate_token
-from app.database import ensure_app_tables, get_db
+from app.database import get_db, write_audit
+from app.extensions import limiter
 
 auth_bp = Blueprint("auth", __name__)
-access_logger = logging.getLogger("access")
-
-# Built-in demo accounts are retained for local demonstrations.
-DEMO_USERS = {
-    "admin": {"password": "admin123", "role": "admin"},
-    "clinician": {"password": "clinic456", "role": "clinician"},
-}
+access_logger = logging.getLogger("mediguard.access")
 
 
-@auth_bp.route("/register", methods=["POST"])
-def register():
-    data = request.get_json(silent=True) or {}
-    username = data.get("username", "")
-    password = data.get("password", "")
-
-    if not isinstance(username, str) or not re.fullmatch(r"[A-Za-z0-9_-]{3,50}", username):
-        return jsonify({
-            "error": "Username must be 3-50 characters using letters, numbers, _ or -"
-        }), 400
-    if not isinstance(password, str) or len(password) < 8:
-        return jsonify({"error": "Password must be at least 8 characters"}), 400
-    if username in DEMO_USERS:
-        return jsonify({"error": "Username is already taken"}), 409
-
-    db = get_db()
-    cursor = db.cursor()
-    try:
-        ensure_app_tables(cursor)
-        cursor.execute(
-            "INSERT INTO app_users (username, password_hash, role) VALUES (%s, %s, %s)",
-            (username, generate_password_hash(password), "clinician"),
-        )
-        db.commit()
-    except IntegrityError:
-        db.rollback()
-        return jsonify({"error": "Username is already taken"}), 409
-    except MySQLError:
-        db.rollback()
-        current_app.logger.exception("Account registration failed")
-        return jsonify({"error": "Account service is temporarily unavailable"}), 503
-    finally:
-        cursor.close()
-
-    token = generate_token(username, "clinician")
-    return jsonify({"token": token, "role": "clinician", "username": username}), 201
-
-
-@auth_bp.route("/login", methods=["POST"])
+@auth_bp.get("/auth/login")
+@limiter.limit("10 per minute")
 def login():
-    data = request.get_json(silent=True) or {}
-    username = data.get("username", "")
-    password = data.get("password", "")
-    ip = request.remote_addr
+    oidc = current_app.extensions.get("oidc_client")
+    if oidc is None:
+        return jsonify({"error": "Identity provider is not configured"}), 503
+    return oidc.authorize_redirect(url_for("auth.callback", _external=True))
 
-    if (
-        not isinstance(username, str)
-        or not username
-        or not isinstance(password, str)
-        or not password
-    ):
-        return jsonify({"error": "Invalid credentials"}), 401
 
-    user = DEMO_USERS.get(username)
-    if user:
-        if user["password"] != password:
-            access_logger.warning("LOGIN_FAILED | ip=%s username=%s", ip, username)
-            return jsonify({"error": "Invalid credentials"}), 401
-        token = generate_token(username, user["role"])
-        access_logger.info("LOGIN_SUCCESS | ip=%s username=%s", ip, username)
-        return jsonify({"token": token, "role": user["role"]}), 200
+@auth_bp.get("/auth/callback")
+@limiter.limit("20 per minute")
+def callback():
+    oidc = current_app.extensions.get("oidc_client")
+    if oidc is None:
+        return jsonify({"error": "Identity provider is not configured"}), 503
 
-    db = get_db()
-    cursor = db.cursor(dictionary=True)
     try:
-        ensure_app_tables(cursor)
-        cursor.execute(
-            "SELECT username, password_hash, role FROM app_users WHERE username = %s",
-            (username,),
-        )
-        stored_user = cursor.fetchone()
-    except MySQLError:
-        current_app.logger.exception("Account login lookup failed")
-        return jsonify({"error": "Account service is temporarily unavailable"}), 503
+        token = oidc.authorize_access_token()
+    except OAuthError as error:
+        current_app.logger.warning("OIDC authorization failed (%s)", type(error).__name__)
+        return jsonify({"error": "Sign-in could not be completed"}), 401
+
+    claims = token.get("userinfo")
+    if not isinstance(claims, dict):
+        try:
+            claims = oidc.userinfo(token=token)
+        except OAuthError as error:
+            current_app.logger.warning(
+                "OIDC user information request failed (%s)", type(error).__name__
+            )
+            return jsonify({"error": "Sign-in could not be completed"}), 401
+
+    subject = claims.get("sub")
+    if not isinstance(subject, str) or not subject:
+        current_app.logger.error("OIDC response did not include a valid subject")
+        return jsonify({"error": "Identity provider returned an invalid identity"}), 401
+
+    role_claim = claims.get(current_app.config["OIDC_ROLE_CLAIM"], [])
+    if isinstance(role_claim, str):
+        roles = {role_claim}
+    elif isinstance(role_claim, list) and all(isinstance(role, str) for role in role_claim):
+        roles = set(role_claim)
+    else:
+        roles = set()
+    role = "admin" if current_app.config["OIDC_ADMIN_ROLE"] in roles else "clinician"
+
+    session.clear()
+    current_app.session_interface.regenerate(session)
+    session.permanent = True
+    session["principal"] = {"sub": subject, "role": role}
+    session["csrf_token"] = secrets.token_urlsafe(32)
+    db = None
+    cursor = None
+    try:
+        db = get_db()
+        cursor = db.cursor()
+        write_audit(cursor, "auth.login", "session")
+        db.commit()
+    except (DatabaseError, PoolTimeout) as error:
+        if db is not None:
+            db.rollback()
+        session.clear()
+        current_app.logger.error("OIDC login audit failed (%s)", type(error).__name__)
+        return jsonify({"error": "Sign-in service is temporarily unavailable"}), 503
     finally:
-        cursor.close()
+        if cursor is not None:
+            cursor.close()
+    access_logger.info("OIDC_LOGIN_SUCCESS role=%s", role)
+    return redirect("/")
 
-    if not stored_user or not check_password_hash(stored_user["password_hash"], password):
-        access_logger.warning("LOGIN_FAILED | ip=%s username=%s", ip, username)
-        return jsonify({"error": "Invalid credentials"}), 401
 
-    token = generate_token(stored_user["username"], stored_user["role"])
-    access_logger.info("LOGIN_SUCCESS | ip=%s username=%s", ip, username)
-    return jsonify({"token": token, "role": stored_user["role"]}), 200
+@auth_bp.get("/auth/session")
+def session_info():
+    principal = session.get("principal")
+    if not isinstance(principal, dict):
+        return jsonify({"authenticated": False}), 200
+    return jsonify(
+        {
+            "authenticated": True,
+            "role": principal.get("role"),
+            "csrf_token": session["csrf_token"],
+        }
+    ), 200
+
+
+@auth_bp.post("/auth/logout")
+def logout():
+    session.clear()
+    return jsonify({"authenticated": False}), 200

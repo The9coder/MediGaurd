@@ -1,76 +1,41 @@
-"""
-Tests for POST /login
-"""
-from unittest.mock import MagicMock, patch
-
-from werkzeug.security import check_password_hash
+"""Tests for the OIDC-backed browser session."""
 
 
-def test_login_success(client):
-    resp = client.post(
-        "/login",
-        json={"username": "admin", "password": "admin123"},
-    )
-    assert resp.status_code == 200
-    data = resp.get_json()
-    assert "token" in data
-    assert data["role"] == "admin"
+def test_oidc_login_is_unavailable_without_provider_config(client):
+    response = client.get("/auth/login")
+    assert response.status_code == 503
+    assert "identity provider" in response.get_json()["error"].lower()
 
 
-def test_login_wrong_password(client):
-    resp = client.post(
-        "/login",
-        json={"username": "admin", "password": "wrongpassword"},
-    )
-    assert resp.status_code == 401
-    assert "error" in resp.get_json()
+def test_session_endpoint_does_not_authenticate_anonymous_user(client):
+    response = client.get("/auth/session")
+    assert response.status_code == 200
+    assert response.get_json() == {"authenticated": False}
 
 
-def test_login_unknown_user(client):
-    with patch("app.routes.auth.get_db") as mock_get_db:
-        cursor = MagicMock()
-        cursor.fetchone.return_value = None
-        mock_get_db.return_value.cursor.return_value = cursor
-        resp = client.post("/login", json={"username": "hacker", "password": "anything"})
-    assert resp.status_code == 401
+def test_session_endpoint_returns_csrf_token_for_authenticated_user(client, auth_headers):
+    response = client.get("/auth/session")
+    result = response.get_json()
+    assert response.status_code == 200
+    assert result["authenticated"] is True
+    assert result["role"] == "admin"
+    assert result["csrf_token"] == auth_headers["X-CSRF-Token"]
 
 
-def test_login_missing_body(client):
-    resp = client.post("/login", data="", content_type="application/json")
-    assert resp.status_code == 401
+def test_logout_requires_csrf_token(client, auth_headers):
+    response = client.post("/auth/logout")
+    assert response.status_code == 403
 
 
-def test_login_clinician(client):
-    resp = client.post(
-        "/login",
-        json={"username": "clinician", "password": "clinic456"},
-    )
-    assert resp.status_code == 200
-    assert resp.get_json()["role"] == "clinician"
+def test_logout_clears_authenticated_session(client, auth_headers):
+    response = client.post("/auth/logout", headers=auth_headers)
+    assert response.status_code == 200
+    assert response.get_json() == {"authenticated": False}
+    assert client.get("/auth/session").get_json() == {"authenticated": False}
 
 
-@patch("app.routes.auth.get_db")
-def test_register_creates_hashed_clinician_account(mock_get_db, client):
-    cursor = MagicMock()
-    mock_get_db.return_value.cursor.return_value = cursor
-
-    response = client.post(
-        "/register",
-        json={"username": "new_clinician", "password": "safe-password"},
-    )
-
-    assert response.status_code == 201
-    assert response.get_json()["role"] == "clinician"
-    insert_args = cursor.execute.call_args_list[-1].args
-    assert "INSERT INTO app_users" in insert_args[0]
-    saved_hash = insert_args[1][1]
-    assert saved_hash != "safe-password"
-    assert check_password_hash(saved_hash, "safe-password")
-
-
-def test_register_rejects_short_password(client):
-    response = client.post(
-        "/register",
-        json={"username": "new_clinician", "password": "short"},
-    )
-    assert response.status_code == 400
+def test_local_password_routes_are_removed(client):
+    login = client.post("/login", json={"username": "admin", "password": "admin"})
+    register = client.post("/register", json={"username": "new", "password": "password"})
+    assert login.status_code == 404
+    assert register.status_code == 404

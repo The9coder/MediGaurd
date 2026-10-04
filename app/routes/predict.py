@@ -1,7 +1,7 @@
 """
 app/routes/predict.py – POST /predict
 ======================================
-JWT-protected endpoint that accepts 13 clinical features,
+OIDC-session-protected endpoint that accepts 13 clinical features,
 validates them (type + range), runs them through the trained
 sklearn Pipeline, and returns risk probability + label + disclaimer.
 
@@ -11,17 +11,18 @@ trained on the UCI Cleveland Heart Disease dataset).
 
 from __future__ import annotations
 
-import json
+import hmac
+import math
 from pathlib import Path
 from typing import Any
 
 import joblib
 import numpy as np
 from flask import Blueprint, current_app, jsonify, request
-from mysql.connector import Error as MySQLError
+from psycopg import Error as DatabaseError
 
-from app.auth import jwt_required
-from app.database import ensure_app_tables, get_db
+from app.auth import auth_required
+from app.database import get_db, write_audit
 
 predict_bp = Blueprint("predict", __name__)
 
@@ -59,6 +60,13 @@ def _get_model() -> Any:
                 f"Model not found at {model_path}. "
                 "Run: python ml/train.py"
             )
+        if current_app.config.get("DEPLOYMENT_ENV") == "production":
+            import hashlib
+
+            expected_hash = current_app.config.get("MODEL_SHA256", "").lower()
+            actual_hash = hashlib.sha256(model_path.read_bytes()).hexdigest()
+            if not expected_hash or not hmac.compare_digest(actual_hash, expected_hash):
+                raise RuntimeError("Prediction model integrity check failed")
         _model = joblib.load(model_path)
         current_app.logger.info("Loaded model from %s", model_path)
     return _model
@@ -72,17 +80,24 @@ def _validate_features(data: dict) -> tuple[list[float] | None, list[str]]:
     errors: list[str] = []
     vector: list[float] = []
 
+    unexpected = sorted(set(data) - set(FEATURE_SPEC))
+    if unexpected:
+        errors.append("Unexpected features: " + ", ".join(unexpected))
+
     for name, (dtype, lo, hi, desc) in FEATURE_SPEC.items():
         if name not in data:
             errors.append(f"Missing feature: '{name}' ({desc})")
             continue
         raw = data[name]
+        if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+            errors.append(f"'{name}' must be a JSON number")
+            continue
         try:
             val = float(raw)
         except (TypeError, ValueError):
-            errors.append(f"'{name}' must be numeric, got: {raw!r}")
+            errors.append(f"'{name}' must be numeric")
             continue
-        if not (lo <= val <= hi):
+        if not math.isfinite(val) or not (lo <= val <= hi):
             errors.append(f"'{name}' out of range [{lo}, {hi}], got: {val}")
             continue
         vector.append(val)
@@ -93,14 +108,24 @@ def _validate_features(data: dict) -> tuple[list[float] | None, list[str]]:
 
 
 @predict_bp.route("/predict", methods=["POST"])
-@jwt_required
+@auth_required
 def predict() -> tuple[Any, int]:
     """
     POST /predict
     Body (JSON): { "age": 55, "sex": 1, ..., "thal": 3 }
     Returns: { prediction, risk_probability, risk_label, disclaimer }
     """
-    data: dict = request.get_json(silent=True) or {}
+    data = request.get_json(silent=True)
+    production_predictions_disabled = (
+        current_app.config.get("DEPLOYMENT_ENV") == "production"
+        and not current_app.config["ENABLE_PREDICTIONS"]
+    )
+    if production_predictions_disabled:
+        return jsonify({
+            "error": "Prediction service has not been approved for this deployment"
+        }), 503
+    if not isinstance(data, dict):
+        return jsonify({"error": "Request body must be a JSON object"}), 400
 
     # Input validation
     feature_vector, errors = _validate_features(data)
@@ -112,10 +137,15 @@ def predict() -> tuple[Any, int]:
         X = np.array([feature_vector])
         prediction: int = int(model.predict(X)[0])
         probability: float = float(model.predict_proba(X)[0][1])
-    except FileNotFoundError as exc:
-        return jsonify({"error": str(exc)}), 503
-    except Exception:
-        current_app.logger.exception("Prediction error")
+    except (FileNotFoundError, RuntimeError, OSError, ImportError):
+        current_app.logger.error("Prediction model is unavailable or failed integrity validation")
+        return jsonify({"error": "Prediction service is temporarily unavailable"}), 503
+    except (ValueError, TypeError, IndexError, AttributeError) as error:
+        current_app.logger.error("Prediction failed (%s)", type(error).__name__)
+        return jsonify({"error": "Prediction service temporarily unavailable"}), 500
+
+    if prediction not in (0, 1) or not math.isfinite(probability) or not 0 <= probability <= 1:
+        current_app.logger.error("Prediction model returned an invalid result")
         return jsonify({"error": "Prediction service temporarily unavailable"}), 500
 
     risk_label = "HIGH" if prediction == 1 else "LOW"
@@ -124,24 +154,12 @@ def predict() -> tuple[Any, int]:
     db = get_db()
     cursor = db.cursor()
     try:
-        ensure_app_tables(cursor)
-        cursor.execute(
-            "INSERT INTO prediction_history "
-            "(username, features, prediction, risk_probability, risk_label) "
-            "VALUES (%s, %s, %s, %s, %s)",
-            (
-                request.jwt_payload["sub"],
-                json.dumps(data),
-                prediction,
-                risk_probability,
-                risk_label,
-            ),
-        )
+        write_audit(cursor, "prediction.request", "prediction")
         db.commit()
-    except MySQLError:
+    except DatabaseError:
         db.rollback()
-        current_app.logger.exception("Prediction history could not be saved")
-        return jsonify({"error": "Prediction history service is temporarily unavailable"}), 503
+        current_app.logger.exception("Prediction request audit event could not be saved")
+        return jsonify({"error": "Prediction service is temporarily unavailable"}), 503
     finally:
         cursor.close()
 
@@ -155,34 +173,3 @@ def predict() -> tuple[Any, int]:
             "for clinical decision-making. Consult a qualified clinician."
         ),
     }), 200
-
-
-@predict_bp.route("/predictions", methods=["GET"])
-@jwt_required
-def prediction_history():
-    username = request.jwt_payload["sub"]
-    is_admin = request.jwt_payload.get("role") == "admin"
-    db = get_db()
-    cursor = db.cursor(dictionary=True)
-    try:
-        ensure_app_tables(cursor)
-        if is_admin:
-            cursor.execute(
-                "SELECT id, username, features, prediction, risk_probability, "
-                "risk_label, created_at FROM prediction_history ORDER BY id DESC"
-            )
-        else:
-            cursor.execute(
-                "SELECT id, username, features, prediction, risk_probability, "
-                "risk_label, created_at FROM prediction_history "
-                "WHERE username = %s ORDER BY id DESC",
-                (username,),
-            )
-        records = cursor.fetchall()
-    except MySQLError:
-        current_app.logger.exception("Prediction history query failed")
-        return jsonify({"error": "Prediction history is temporarily unavailable"}), 503
-    finally:
-        cursor.close()
-
-    return jsonify({"predictions": records}), 200

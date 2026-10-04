@@ -1,46 +1,23 @@
-"""
-JWT Authentication utilities
-"""
-import datetime
+"""Session authentication helpers for OIDC-authenticated users."""
+
 import functools
 
-import jwt
-from flask import current_app, jsonify, request
+from flask import jsonify, request, session
 
 
-def generate_token(user_id: str, role: str) -> str:
-    payload = {
-        "sub": user_id,
-        "role": role,
-        "iat": datetime.datetime.utcnow(),
-        "exp": datetime.datetime.utcnow()
-        + datetime.timedelta(hours=current_app.config["JWT_EXPIRY_HOURS"]),
-    }
-    return jwt.encode(payload, current_app.config["JWT_SECRET"], algorithm="HS256")
+def auth_required(view):
+    """Require a valid identity established by the OIDC callback."""
 
-
-def decode_token(token: str) -> dict:
-    return jwt.decode(
-        token, current_app.config["JWT_SECRET"], algorithms=["HS256"]
-    )
-
-
-def jwt_required(f):
-    """Decorator that enforces a valid Bearer JWT."""
-
-    @functools.wraps(f)
+    @functools.wraps(view)
     def decorated(*args, **kwargs):
-        auth_header = request.headers.get("Authorization", "")
-        if not auth_header.startswith("Bearer "):
-            return jsonify({"error": "Missing or malformed Authorization header"}), 401
-        token = auth_header.split(" ", 1)[1]
-        try:
-            payload = decode_token(token)
-        except jwt.ExpiredSignatureError:
-            return jsonify({"error": "Token expired"}), 401
-        except jwt.InvalidTokenError:
-            return jsonify({"error": "Invalid token"}), 401
-        request.jwt_payload = payload
-        return f(*args, **kwargs)
+        principal = session.get("principal")
+        if (
+            not isinstance(principal, dict)
+            or not isinstance(principal.get("sub"), str)
+            or principal.get("role") not in {"admin", "clinician"}
+        ):
+            return jsonify({"error": "Authentication required"}), 401
+        request.principal = principal
+        return view(*args, **kwargs)
 
     return decorated
