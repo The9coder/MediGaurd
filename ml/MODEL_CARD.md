@@ -1,10 +1,5 @@
 # Model Card – MediGuard Heart Disease Risk Predictor
 
-> **⚠️ EDUCATIONAL / PORTFOLIO PROJECT – NOT FOR CLINICAL USE**  
-> This model is built for learning DevSecOps and ML engineering concepts.  
-> It must **never** be used to diagnose or treat real patients.
-
----
 
 ## Model Details
 
@@ -22,12 +17,6 @@
 
 ---
 
-## Intended Use
-
-### In-scope
-- Educational demonstration of ML model deployment in a DevSecOps pipeline
-- Interview and portfolio showcasing model evaluation, bias analysis, and secure deployment
-- Teaching material for AI/ML students learning about healthcare AI ethics
 
 ### Out-of-scope (critical)
 - **Clinical diagnosis, screening, or risk stratification of real patients**
